@@ -27,7 +27,8 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
 
-load_dotenv()
+load_dotenv()  # Load .env file
+load_dotenv("config.env")  # Load config.env file
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,11 +43,17 @@ class MissingAPIKeyError(Exception):
 @click.option("--port", default=10002)
 def main(host, port):
     try:
-        # Check for API key only if Vertex AI is not configured
+        # Check for API key - support multiple providers
         if not os.getenv("GOOGLE_GENAI_USE_VERTEXAI") == "TRUE":
-            if not os.getenv("GEMINI_API_KEY"):
+            has_api_key = (
+                os.getenv("GEMINI_API_KEY") or
+                os.getenv("YUANJING_API_KEY") or
+                os.getenv("OPENAI_API_KEY") or
+                os.getenv("ANTHROPIC_API_KEY")
+            )
+            if not has_api_key:
                 raise MissingAPIKeyError(
-                    "GEMINI_API_KEY environment variable not set and GOOGLE_GENAI_USE_VERTEXAI is not TRUE."
+                    "No API key found. Please set GEMINI_API_KEY, YUANJING_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY"
                 )
 
         capabilities = AgentCapabilities(
