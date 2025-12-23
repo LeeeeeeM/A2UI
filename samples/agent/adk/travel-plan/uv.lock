@@ -35,7 +35,7 @@ dependencies = [
 requires-dist = [{ name = "a2a-sdk", specifier = ">=0.3.0" }]
 
 [[package]]
-name = "a2ui-user-register"
+name = "a2ui-travel-plan"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

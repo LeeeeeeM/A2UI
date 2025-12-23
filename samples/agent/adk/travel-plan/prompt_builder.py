@@ -678,7 +678,7 @@ A2UI_SCHEMA = r'''
                     "properties": {
                       "value": {
                         "type": "object",
-                        "description": "The current value of the slider. This can be a literal number ('literalNumber') or a reference to a value in the data model ('path', e.g. '/restaurant/cost').",
+                        "description": "The current value of the slider. This can be a literal number ('literalNumber') or a reference to a value in the data model ('path', e.g. '/travel/price').",
                         "properties": {
                           "literalNumber": {
                             "type": "number"
@@ -785,7 +785,7 @@ A2UI_SCHEMA = r'''
 }
 '''
 
-from a2ui_examples import RESTAURANT_UI_EXAMPLES
+from a2ui_examples import TRAVEL_UI_EXAMPLES
 
 
 def get_ui_prompt(base_url: str, examples: str) -> str:
@@ -803,7 +803,7 @@ def get_ui_prompt(base_url: str, examples: str) -> str:
     formatted_examples = examples.format(base_url=base_url)
 
     return f"""
-    You are a helpful restaurant finding assistant. Your final output MUST be a a2ui UI JSON response.
+    You are a helpful travel planning assistant. Your final output MUST be a a2ui UI JSON response.
 
     To generate the response, you MUST follow these rules:
     1.  Your response MUST be in two parts, separated by the delimiter: `---a2ui_JSON---`.
@@ -812,11 +812,9 @@ def get_ui_prompt(base_url: str, examples: str) -> str:
     4.  The JSON part MUST validate against the A2UI JSON SCHEMA provided below.
 
     --- UI TEMPLATE RULES ---
-    -   If the query is for a list of restaurants, use the restaurant data you have already received from the `get_restaurants` tool to populate the `dataModelUpdate.contents` array (e.g., as a `valueMap` for the "items" key).
-    -   If the number of restaurants is 5 or fewer, you MUST use the `SINGLE_COLUMN_LIST_EXAMPLE` template.
-    -   If the number of restaurants is more than 5, you MUST use the `TWO_COLUMN_LIST_EXAMPLE` template.
-    -   If the query is to book a restaurant (e.g., "USER_WANTS_TO_BOOK..."), you MUST use the `BOOKING_FORM_EXAMPLE` template.
-    -   If the query is a booking submission (e.g., "User submitted a booking..."), you MUST use the `CONFIRMATION_EXAMPLE` template.
+    -   For initial requests, use the TRAVEL_PLANNING_FORM_EXAMPLE template to show a form with departure city, destination city, and travel date fields.
+    -   When users submit the form (plan_trip action), use the FLIGHT_RESULTS_EXAMPLE template to show available flights.
+    -   Always respond immediately with the appropriate UI template. Do not provide text responses.
 
     {formatted_examples}
 
@@ -831,15 +829,15 @@ def get_text_prompt() -> str:
     Constructs the prompt for a text-only agent.
     """
     return """
-    You are a helpful restaurant finding assistant. Your final output MUST be a text response.
+    You are a helpful travel planning assistant. Your final output MUST be a text response.
 
     To generate the response, you MUST follow these rules:
-    1.  **For finding restaurants:**
-        a. You MUST call the `get_restaurants` tool. Extract the cuisine, location, and a specific number (`count`) of restaurants from the user's query.
-        b. After receiving the data, format the restaurant list as a clear, human-readable text response. You MUST preserve any markdown formatting (like for links) that you receive from the tool.
+    1.  **For finding flights:**
+        a. You MUST call the `plan_trip` tool. Extract the departure city, destination city, and travel date from the user's query.
+        b. After receiving the data, format the flight list as a clear, human-readable text response. You MUST preserve any markdown formatting that you receive from the tool.
 
-    2.  **For booking a table (when you receive a query like 'USER_WANTS_TO_BOOK...'):**
-        a. Respond by asking the user for the necessary details to make a booking (party size, date, time, dietary requirements).
+    2.  **For booking a flight (when you receive a query like 'USER_WANTS_TO_BOOK_TRIP...'):**
+        a. Respond by confirming the flight booking details.
 
     3.  **For confirming a booking (when you receive a query like 'User submitted a booking...'):**
         a. Respond with a simple text confirmation of the booking details.
@@ -854,11 +852,11 @@ if __name__ == "__main__":
     # You can now easily construct a prompt with the relevant examples.
     # For a different agent (e.g., a flight booker), you would pass in
     # different examples but use the same `get_ui_prompt` function.
-    restaurant_prompt = get_ui_prompt(my_base_url, RESTAURANT_UI_EXAMPLES)
+    travel_prompt = get_ui_prompt(my_base_url, TRAVEL_UI_EXAMPLES)
 
-    print(restaurant_prompt)
+    print(travel_prompt)
 
     # This demonstrates how you could save the prompt to a file for inspection
     with open("generated_prompt.txt", "w") as f:
-        f.write(restaurant_prompt)
+        f.write(travel_prompt)
     print("\nGenerated prompt saved to generated_prompt.txt")

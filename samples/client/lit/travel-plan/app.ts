@@ -45,13 +45,13 @@ import "./ui/ui.js";
 import { AppConfig } from "./configs/types.js";
 import { config as restaurantConfig } from "./configs/restaurant.js";
 import { config as contactsConfig } from "./configs/contacts.js";
-import { config as userRegisterConfig } from "./configs/user_register.js";
+import { config as travelPlanConfig } from "./configs/travel_plan.js";
 import { styleMap } from "lit/directives/style-map.js";
 
 const configs: Record<string, AppConfig> = {
   restaurant: restaurantConfig,
   contacts: contactsConfig,
-  user_register: userRegisterConfig,
+  travel_plan: travelPlanConfig,
 };
 
 @customElement("a2ui-shell")
@@ -69,7 +69,7 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
   accessor #lastMessages: v0_8.Types.ServerToClientMessage[] = [];
 
   @state()
-  accessor config: AppConfig = configs.restaurant;
+  accessor config: AppConfig = configs.travel_plan;
 
   @state()
   accessor #loadingTextIndex = 0;
@@ -287,8 +287,8 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
 
     // Load config from URL
     const urlParams = new URLSearchParams(window.location.search);
-    const appKey = urlParams.get("app") || "restaurant";
-    this.config = configs[appKey] || configs.restaurant;
+    const appKey = urlParams.get("app") || "travel_plan";
+    this.config = configs[appKey] || configs.travel_plan;
 
     // Apply the theme directly, which will use the Lit context.
     if (this.config.theme) {

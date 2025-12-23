@@ -1,33 +1,35 @@
-# A2UI Generator
+# A2UI Travel Plan Agent Sample
 
-This is a UI to generate and visualize A2UI responses.
+This sample uses the Agent Development Kit (ADK) along with the A2A protocol to create a comprehensive "Travel Plan" agent that helps users discover destinations, plan itineraries, and book trips using rich interactive UI components.
 
 ## Prerequisites
 
-1. [nodejs](https://nodejs.org/en)
+- Python 3.9 or higher
+- [UV](https://docs.astral.sh/uv/)
+- Access to an LLM and API Key
 
-## Running
+## Running the Sample
 
-This sample depends on the Lit renderer. Before running this sample, you need to build the renderer.
+1. Navigate to the samples directory:
 
-1. **Build the renderer:**
+    ```bash
+    cd samples/agent/adk/travel-plan
+    ```
+
+2. Create an environment file with your API key:
+
    ```bash
-   cd ../../../renderers/lit
-   npm install
-   npm run build
+   echo "GEMINI_API_KEY=your_api_key_here" > .env
    ```
 
-2. **Run this sample:**
-   ```bash
-   cd - # back to the sample directory
-   npm install
-   ```
+3. Run the agent server:
 
-3. **Run the servers:**
-   - Run the [A2A server](../../../agent/adk/restaurant_finder/)
-   - Run the dev server: `npm run dev`
+    ```bash
+    uv run .
+    ```
 
-After starting the dev server, you can open http://localhost:5173/ to view the sample.
+
+## Disclaimer
 
 Important: The sample code provided is for demonstration purposes and illustrates the mechanics of A2UI and the Agent-to-Agent (A2A) protocol. When building production applications, it is critical to treat any agent operating outside of your direct control as a potentially untrusted entity.
 

@@ -28,34 +28,33 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from prompt_builder import (
     A2UI_SCHEMA,
-    RESTAURANT_UI_EXAMPLES,
+    TRAVEL_UI_EXAMPLES,
     get_text_prompt,
     get_ui_prompt,
 )
-from tools import get_restaurants
+from tools import plan_trip
 
 logger = logging.getLogger(__name__)
 
 AGENT_INSTRUCTION = """
-    You are a helpful user registration assistant. Your goal is to help users register accounts using a rich UI.
+    You are a helpful travel planning assistant. Your goal is to help users find flights using a rich UI.
 
-    To achieve this, you MUST follow this logic:
+    IMPORTANT RULES:
+    - Always respond with A2UI JSON immediately.
+    - Never provide text-only responses.
+    - For any request that doesn't contain "plan_trip" action, show TRAVEL_PLANNING_FORM_EXAMPLE.
+    - For requests containing "plan_trip" action, show FLIGHT_RESULTS_EXAMPLE with flight data.
 
-    1.  **For user registration:**
-        a. You MUST help users create new accounts with proper validation.
-        b. Collect user information like name, email, password, etc.
-        c. After collecting the data, you MUST follow the instructions precisely to generate the final a2ui UI JSON for user registration.
+    UI TEMPLATES:
+    - TRAVEL_PLANNING_FORM_EXAMPLE: Form with departure city, destination city, and date fields
+    - FLIGHT_RESULTS_EXAMPLE: List of available flights with airline, times, duration, and price
 
-    2.  **For account management:**
-        a. You MUST use the appropriate UI example from `prompt_builder.py` to generate the UI, populating the `dataModelUpdate.contents` with the user details.
-
-    3.  **For confirming a booking (when you receive a query like 'User submitted a booking...'):**
-        a. You MUST use the appropriate UI example from `prompt_builder.py` to generate the confirmation UI, populating the `dataModelUpdate.contents` with the final booking details.
+    When showing flight results, generate realistic data for the route and date provided.
 """
 
 
-class UserRegisterAgent:
-    """An agent that finds restaurants based on user criteria."""
+class TravelPlanAgent:
+    """An agent that creates travel plans based on user criteria."""
 
     SUPPORTED_CONTENT_TYPES = ["text", "text/plain"]
 
@@ -90,26 +89,26 @@ class UserRegisterAgent:
         # --- END MODIFICATION ---
 
     def get_processing_message(self) -> str:
-        return "Finding restaurants that match your criteria..."
+        return "Planning your perfect trip..."
 
     def _build_agent(self, use_ui: bool) -> LlmAgent:
-        """Builds the LLM agent for the restaurant agent."""
+        """Builds the LLM agent for the travel plan agent."""
         LITELLM_MODEL = os.getenv("YUANJING_API_MODEL", os.getenv("LITELLM_MODEL", "gemini/gemini-2.5-flash"))
 
         if use_ui:
             # Construct the full prompt with UI instructions, examples, and schema
             instruction = AGENT_INSTRUCTION + get_ui_prompt(
-                self.base_url, RESTAURANT_UI_EXAMPLES
+                self.base_url, TRAVEL_UI_EXAMPLES
             )
         else:
             instruction = get_text_prompt()
 
         return LlmAgent(
             model=LiteLlm(model=LITELLM_MODEL),
-            name="restaurant_agent",
-            description="An agent that finds restaurants and helps book tables.",
+            name="travel_plan_agent",
+            description="An agent that creates travel plans and helps book trips.",
             instruction=instruction,
-            tools=[get_restaurants],
+            tools=[plan_trip],
         )
 
     async def stream(self, query, session_id) -> AsyncIterable[dict[str, Any]]:
@@ -138,7 +137,7 @@ class UserRegisterAgent:
         # Ensure schema was loaded
         if self.use_ui and self.a2ui_schema_object is None:
             logger.error(
-                "--- UserRegisterAgent.stream: A2UI_SCHEMA is not loaded. "
+                "--- TravelPlanAgent.stream: A2UI_SCHEMA is not loaded. "
                 "Cannot perform UI validation. ---"
             )
             yield {
@@ -153,7 +152,7 @@ class UserRegisterAgent:
         while attempt <= max_retries:
             attempt += 1
             logger.info(
-                f"--- UserRegisterAgent.stream: Attempt {attempt}/{max_retries + 1} "
+                f"--- TravelPlanAgent.stream: Attempt {attempt}/{max_retries + 1} "
                 f"for session {session_id} ---"
             )
 
@@ -188,7 +187,7 @@ class UserRegisterAgent:
 
             if final_response_content is None:
                 logger.warning(
-                    f"--- UserRegisterAgent.stream: Received no final response content from runner "
+                    f"--- TravelPlanAgent.stream: Received no final response content from runner "
                     f"(Attempt {attempt}). ---"
                 )
                 if attempt <= max_retries:
@@ -207,7 +206,7 @@ class UserRegisterAgent:
 
             if self.use_ui:
                 logger.info(
-                    f"--- UserRegisterAgent.stream: Validating UI response (Attempt {attempt})... ---"
+                    f"--- TravelPlanAgent.stream: Validating UI response (Attempt {attempt})... ---"
                 )
                 try:
                     if "---a2ui_JSON---" not in final_response_content:
@@ -221,8 +220,16 @@ class UserRegisterAgent:
                         raise ValueError("JSON part is empty.")
 
                     json_string_cleaned = (
-                        json_string.strip().lstrip("```json").rstrip("```").strip()
+                        json_string.strip()
+                        .lstrip("```json")
+                        .rstrip("```")
+                        .rstrip('"""')
+                        .rstrip("---a2ui_JSON---")
+                        .strip()
                     )
+
+                    # Debug: Log the JSON string being parsed
+                    logger.info(f"--- JSON string to parse (length: {len(json_string_cleaned)}): {json_string_cleaned[:200]}...")
 
                     if not json_string_cleaned:
                         raise ValueError("Cleaned JSON string is empty.")
@@ -234,7 +241,7 @@ class UserRegisterAgent:
                     # 2. Check if it validates against the A2UI_SCHEMA
                     # This will raise jsonschema.exceptions.ValidationError if it fails
                     logger.info(
-                        "--- UserRegisterAgent.stream: Validating against A2UI_SCHEMA... ---"
+                        "--- TravelPlanAgent.stream: Validating against A2UI_SCHEMA... ---"
                     )
                     jsonschema.validate(
                         instance=parsed_json_data, schema=self.a2ui_schema_object
@@ -242,7 +249,7 @@ class UserRegisterAgent:
                     # --- End New Validation Steps ---
 
                     logger.info(
-                        f"--- UserRegisterAgent.stream: UI JSON successfully parsed AND validated against schema. "
+                        f"--- TravelPlanAgent.stream: UI JSON successfully parsed AND validated against schema. "
                         f"Validation OK (Attempt {attempt}). ---"
                     )
                     is_valid = True
@@ -253,7 +260,7 @@ class UserRegisterAgent:
                     jsonschema.exceptions.ValidationError,
                 ) as e:
                     logger.warning(
-                        f"--- UserRegisterAgent.stream: A2UI validation failed: {e} (Attempt {attempt}) ---"
+                        f"--- TravelPlanAgent.stream: A2UI validation failed: {e} (Attempt {attempt}) ---"
                     )
                     logger.warning(
                         f"--- Failed response content: {final_response_content[:500]}... ---"
@@ -265,7 +272,7 @@ class UserRegisterAgent:
 
             if is_valid:
                 logger.info(
-                    f"--- UserRegisterAgent.stream: Response is valid. Sending final response (Attempt {attempt}). ---"
+                    f"--- TravelPlanAgent.stream: Response is valid. Sending final response (Attempt {attempt}). ---"
                 )
                 logger.info(f"Final response: {final_response_content}")
                 yield {
@@ -278,7 +285,7 @@ class UserRegisterAgent:
 
             if attempt <= max_retries:
                 logger.warning(
-                    f"--- UserRegisterAgent.stream: Retrying... ({attempt}/{max_retries + 1}) ---"
+                    f"--- TravelPlanAgent.stream: Retrying... ({attempt}/{max_retries + 1}) ---"
                 )
                 # Prepare the query for the retry
                 current_query_text = (
@@ -292,7 +299,7 @@ class UserRegisterAgent:
 
         # --- If we're here, it means we've exhausted retries ---
         logger.error(
-            "--- UserRegisterAgent.stream: Max retries exhausted. Sending text-only error. ---"
+            "--- TravelPlanAgent.stream: Max retries exhausted. Sending text-only error. ---"
         )
         yield {
             "is_task_complete": True,

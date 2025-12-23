@@ -33,19 +33,19 @@ from a2a.utils import (
 )
 from a2a.utils.errors import ServerError
 from a2ui.a2ui_extension import create_a2ui_part, try_activate_a2ui_extension
-from agent import UserRegisterAgent
+from agent import TravelPlanAgent
 
 logger = logging.getLogger(__name__)
 
 
-class UserRegisterAgentExecutor(AgentExecutor):
-    """Restaurant AgentExecutor Example."""
+class TravelPlanAgentExecutor(AgentExecutor):
+    """Travel Plan AgentExecutor Example."""
 
     def __init__(self, base_url: str):
         # Instantiate two agents: one for UI and one for text-only.
         # The appropriate one will be chosen at execution time.
-        self.ui_agent = UserRegisterAgent(base_url=base_url, use_ui=True)
-        self.text_agent = UserRegisterAgent(base_url=base_url, use_ui=False)
+        self.ui_agent = TravelPlanAgent(base_url=base_url, use_ui=True)
+        self.text_agent = TravelPlanAgent(base_url=base_url, use_ui=False)
 
     async def execute(
         self,
@@ -94,19 +94,18 @@ class UserRegisterAgentExecutor(AgentExecutor):
             action = ui_event_part.get("actionName")
             ctx = ui_event_part.get("context", {})
 
-            if action == "book_restaurant":
-                restaurant_name = ctx.get("restaurantName", "Unknown Restaurant")
-                address = ctx.get("address", "Address not provided")
+            if action == "book_trip":
+                destination_name = ctx.get("destinationName", "Unknown Destination")
+                price = ctx.get("price", "Price not provided")
                 image_url = ctx.get("imageUrl", "")
-                query = f"USER_WANTS_TO_BOOK: {restaurant_name}, Address: {address}, ImageURL: {image_url}"
+                query = f"USER_WANTS_TO_BOOK_TRIP: {destination_name}, Price: {price}, ImageURL: {image_url}"
 
-            elif action == "submit_booking":
-                restaurant_name = ctx.get("restaurantName", "Unknown Restaurant")
-                party_size = ctx.get("partySize", "Unknown Size")
-                reservation_time = ctx.get("reservationTime", "Unknown Time")
-                dietary_reqs = ctx.get("dietary", "None")
-                image_url = ctx.get("imageUrl", "")
-                query = f"User submitted a booking for {restaurant_name} for {party_size} people at {reservation_time} with dietary requirements: {dietary_reqs}. The image URL is {image_url}"
+            elif action == "plan_trip":
+                departure = ctx.get("departure", "Unknown departure")
+                destination = ctx.get("destination", "Unknown destination")
+                travel_date = ctx.get("travelDate", "Date not specified")
+                # This will be handled by the LLM to generate FLIGHT_RESULTS_EXAMPLE
+                query = f"Show available flights from {departure} to {destination} on {travel_date}"
 
             else:
                 query = f"User submitted an event: {action} with data: {ctx}"

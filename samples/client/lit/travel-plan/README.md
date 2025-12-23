@@ -1,35 +1,33 @@
-# A2UI Restaurant finder and table reservation agent sample.
+# A2UI Travel Plan Client
 
-This sample uses the Agent Development Kit (ADK) along with the A2A protocol to create a simple "Restaurant finder and table reservation" agent that is hosted as an A2A server.
+This is a UI client for the A2UI Travel Plan agent that helps users discover destinations and plan their perfect trips with interactive UI components.
 
 ## Prerequisites
 
-- Python 3.9 or higher
-- [UV](https://docs.astral.sh/uv/)
-- Access to an LLM and API Key
+1. [nodejs](https://nodejs.org/en)
 
-## Running the Sample
+## Running
 
-1. Navigate to the samples directory:
+This sample depends on the Lit renderer. Before running this sample, you need to build the renderer.
 
-    ```bash
-    cd a2a_samples/a2ui_restaurant_finder
-    ```
-
-2. Create an environment file with your API key:
-
+1. **Build the renderer:**
    ```bash
-   echo "GEMINI_API_KEY=your_api_key_here" > .env
+   cd ../../../renderers/lit
+   npm install
+   npm run build
    ```
 
-3. Run the agent server:
+2. **Run this sample:**
+   ```bash
+   cd - # back to the sample directory
+   npm install
+   ```
 
-    ```bash
-    uv run .
-    ```
+3. **Run the servers:**
+   - Run the [A2A Travel Plan server](../../../agent/adk/travel-plan/)
+   - Run the dev server: `npm run dev`
 
-
-## Disclaimer
+After starting the dev server, you can open http://localhost:5173/ to view the sample.
 
 Important: The sample code provided is for demonstration purposes and illustrates the mechanics of A2UI and the Agent-to-Agent (A2A) protocol. When building production applications, it is critical to treat any agent operating outside of your direct control as a potentially untrusted entity.
 

@@ -1,10 +1,10 @@
 {
-  "name": "@a2ui/user-register",
+  "name": "@a2ui/travel-plan",
   "private": true,
   "version": "0.8.1",
-  "description": "A2UI User Registration Client",
-  "main": "./dist/user-register.js",
-  "types": "./dist/user-register.d.ts",
+  "description": "A2UI Travel Plan Client",
+  "main": "./dist/travel-plan.js",
+  "types": "./dist/travel-plan.d.ts",
   "type": "module",
   "scripts": {
     "prepack": "npm run build",
@@ -53,7 +53,7 @@
     }
   },
   "repository": {
-    "directory": "samples/client/lit/user-register",
+    "directory": "samples/client/lit/travel-plan",
     "type": "git",
     "url": "git+https://github.com/google/A2UI.git"
   },

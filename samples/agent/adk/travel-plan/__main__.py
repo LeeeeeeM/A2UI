@@ -21,8 +21,8 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from a2ui.a2ui_extension import get_a2ui_agent_extension
-from agent import UserRegisterAgent
-from agent_executor import UserRegisterAgentExecutor
+from agent import TravelPlanAgent
+from agent_executor import TravelPlanAgentExecutor
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
@@ -61,27 +61,27 @@ def main(host, port):
             extensions=[get_a2ui_agent_extension()],
         )
         skill = AgentSkill(
-            id="user_registration",
-            name="User Registration Tool",
-            description="Helps users register new accounts with proper validation.",
-            tags=["user", "registration"],
-            examples=["Register a new user account", "Create user profile"],
+            id="travel_planning",
+            name="Travel Planning Tool",
+            description="Helps users plan trips with destination selection and booking.",
+            tags=["travel", "planning", "booking"],
+            examples=["Plan a trip to Paris", "Book a vacation", "Create travel itinerary"],
         )
 
         base_url = f"http://{host}:{port}"
 
         agent_card = AgentCard(
-            name="User Registration Agent",
-            description="This agent helps users register new accounts with proper validation.",
+            name="Travel Plan Agent",
+            description="This agent helps users plan trips with destination selection and booking.",
             url=base_url,  # <-- Use base_url here
             version="1.0.0",
-            default_input_modes=UserRegisterAgent.SUPPORTED_CONTENT_TYPES,
-            default_output_modes=UserRegisterAgent.SUPPORTED_CONTENT_TYPES,
+            default_input_modes=TravelPlanAgent.SUPPORTED_CONTENT_TYPES,
+            default_output_modes=TravelPlanAgent.SUPPORTED_CONTENT_TYPES,
             capabilities=capabilities,
             skills=[skill],
         )
 
-        agent_executor = UserRegisterAgentExecutor(base_url=base_url)
+        agent_executor = TravelPlanAgentExecutor(base_url=base_url)
 
         request_handler = DefaultRequestHandler(
             agent_executor=agent_executor,
@@ -102,7 +102,8 @@ def main(host, port):
             allow_headers=["*"],
         )
 
-        app.mount("/static", StaticFiles(directory="images"), name="static")
+        # No static files needed for travel planning
+        # app.mount("/static", StaticFiles(directory="images"), name="static")
 
         uvicorn.run(app, host=host, port=port)
     except MissingAPIKeyError as e:

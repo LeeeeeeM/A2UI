@@ -17,8 +17,8 @@
 import { AppConfig } from "./types.js";
 
 export const config: AppConfig = {
-  key: "user_register",
-  title: "User Registration",
+  key: "travel_plan",
+  title: "Travel Plan",
   heroImage: "/hero.png",
   heroImageDark: "/hero-dark.png",
   background: `radial-gradient(
@@ -46,12 +46,12 @@ export const config: AppConfig = {
     light-dark(#f0f4f8, #0f172a) 0%,
     light-dark(#e2e8f0, #1e293b) 100%
   )`,
-  placeholder: "Register a new user account.",
+  placeholder: "Tell me where you want to go",
   loadingText: [
-    "Creating your account...",
-    "Setting up profile...",
-    "Almost done...",
-    "Welcome aboard!",
+    "Discovering amazing destinations...",
+    "Planning your perfect itinerary...",
+    "Finding the best deals...",
+    "Your dream trip is ready!",
   ],
-  serverUrl: "http://localhost:10003",
+  serverUrl: "http://localhost:10002",
 };
