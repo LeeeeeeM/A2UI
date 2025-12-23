@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import json
 import logging
 import os
+import time
 from collections.abc import AsyncIterable
 from typing import Any
 
@@ -130,7 +132,8 @@ class TravelPlanAgent:
             session.state["base_url"] = self.base_url
 
         # --- Begin: UI Validation and Retry Logic ---
-        max_retries = 1  # Total 2 attempts
+        max_retries = int(os.getenv("MAX_RETRIES", "2"))  # Default 2 retries (3 total attempts)
+        retry_delay = float(os.getenv("RETRY_DELAY", "1.0"))  # Default 1 second delay between retries
         attempt = 0
         current_query_text = query
 
@@ -148,6 +151,11 @@ class TravelPlanAgent:
                 ),
             }
             return
+
+        logger.info(
+            f"--- TravelPlanAgent.stream: Starting with max_retries={max_retries}, "
+            f"retry_delay={retry_delay}s for session {session_id} ---"
+        )
 
         while attempt <= max_retries:
             attempt += 1
@@ -287,6 +295,8 @@ class TravelPlanAgent:
                 logger.warning(
                     f"--- TravelPlanAgent.stream: Retrying... ({attempt}/{max_retries + 1}) ---"
                 )
+                # Add delay before retry
+                await asyncio.sleep(retry_delay)
                 # Prepare the query for the retry
                 current_query_text = (
                     f"Your previous response was invalid. {error_message} "

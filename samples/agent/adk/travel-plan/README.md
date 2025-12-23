@@ -22,7 +22,27 @@ This sample uses the Agent Development Kit (ADK) along with the A2A protocol to 
    echo "GEMINI_API_KEY=your_api_key_here" > .env
    ```
 
-3. Run the agent server:
+   Or copy and modify the provided config.env template:
+
+   ```bash
+   cp config.env .env
+   # Edit .env with your API keys and desired configuration
+   ```
+
+3. Configure retry behavior (optional):
+
+   The agent includes configurable retry logic for handling UI validation failures. You can customize:
+
+   - `MAX_RETRIES`: Maximum number of retries (default: 2, total 3 attempts)
+   - `RETRY_DELAY`: Delay in seconds between retries (default: 1.0)
+
+   Example configuration in your `.env` file:
+   ```bash
+   MAX_RETRIES=3
+   RETRY_DELAY=2.0
+   ```
+
+4. Run the agent server:
 
     ```bash
     uv run .
