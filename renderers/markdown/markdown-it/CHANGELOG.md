@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-- Widen `@a2ui/web_core` peer dependency range to `^0.9.2 || ^0.10.0` (#1766, #1930).
+- Bump dependencies so the package is compatible with `@a2ui/web_core: ^0.10.3`.
 
 ## 0.0.2
 
