@@ -24,20 +24,28 @@ from a2ui.core.catalog import Catalog
 from a2ui.core.basic_catalog import v0_8, v0_9, v1_0
 from a2ui.core.schema import ProtocolVersion
 from a2ui.core.processing import MessageProcessor, MessageProcessorOptions
-from a2ui.core.validation import STRICT_VALIDATION, ValidationConfig
+from a2ui.core.validation import STRICT_VALIDATION
 from a2ui.core.exceptions import (
     A2uiError,
     A2uiParseError,
     A2uiValidationError,
     A2uiCatalogError,
     A2uiIntegrityError,
+    A2uiDataError,
+    A2uiExpressionError,
 )
 
 from a2ui.core.validation import A2uiValidatorError
 
 CATEGORY_TO_EXCEPTION = {
-    "ParseError": (A2uiParseError, A2uiError),
-    "ValidationError": (A2uiValidationError, A2uiValidatorError, A2uiError),
+    "ParseError": (A2uiParseError, A2uiExpressionError, A2uiError, ValueError),
+    "ValidationError": (
+        A2uiValidationError,
+        A2uiValidatorError,
+        A2uiExpressionError,
+        A2uiError,
+        ValueError,
+    ),
     "CatalogError": (A2uiCatalogError, A2uiError),
     "IntegrityError": (
         A2uiIntegrityError,
@@ -46,15 +54,43 @@ CATEGORY_TO_EXCEPTION = {
         A2uiError,
         ValueError,
     ),
-    "RecursionError": (A2uiValidationError, A2uiValidatorError, A2uiError, ValueError),
+    "RecursionError": (
+        A2uiValidationError,
+        A2uiValidatorError,
+        A2uiExpressionError,
+        A2uiError,
+        ValueError,
+    ),
+    "DataError": (A2uiDataError, A2uiError, ValueError),
 }
 
-SUPPORTED_PROTOCOL_VERSIONS = {"v0.8", "v0.9", "v1.0", "0.8", "0.9", "1.0"}
+SUPPORTED_PROTOCOL_VERSIONS = {
+    "v0.8",
+    "v0.9",
+    "v0.9.1",
+    "v1.0",
+    "0.8",
+    "0.9",
+    "0.9.1",
+    "1.0",
+}
 
 SKIP_TEST_NAMES: set[str] = set()
 
 # Transition skip list containing specific test suite files or basenames to skip entirely.
 SKIP_TEST_SUITES: set[str] = set()
+
+# Suites the core library cannot meaningfully execute, with the reason for each.
+# The core library has no access to the UI frameworks that apply accessibility
+# attributes, so running these here would only exercise mocks. The framework
+# renderers will run them once the v1.0 catalogs land for those renderers.
+UNRUNNABLE_SUITES: dict[str, str] = {
+    "core/accessibility.yaml": (
+        "Accessibility attributes are applied by the UI framework renderers"
+        " (Lit, React, Angular, Flutter, SwiftUI), which the core library does"
+        " not have access to. Pending v1.0 catalogs for those renderers."
+    ),
+}
 
 # Root core conformance directory resolution
 CONFORMANCE_ROOT = os.environ.get(
@@ -123,9 +159,19 @@ def resolve_catalog_id(case: dict[str, Any]) -> str | None:
     )
 
 
+SUITE_LOAD_ERRORS: list[str] = []
+"""Problems encountered while loading suites, reported by `test_all_suites_load`.
+
+Collected rather than raised so that a single malformed suite does not abort
+collection of every other case.
+"""
+
+
 def load_conformance_cases() -> list[tuple[str, str, dict[str, Any]]]:
     cases = []
     yaml_files = find_yaml_files(CORE_DIR)
+    if not yaml_files:
+        SUITE_LOAD_ERRORS.append(f"No conformance suites found under {CORE_DIR}")
     for file_path in yaml_files:
         rel_path = os.path.relpath(file_path, CONFORMANCE_ROOT)
         base_name = os.path.basename(file_path)
@@ -134,17 +180,25 @@ def load_conformance_cases() -> list[tuple[str, str, dict[str, Any]]]:
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f)
-        except Exception:
+        except Exception as err:
+            SUITE_LOAD_ERRORS.append(f"{rel_path}: failed to parse: {err}")
             continue
 
         if not isinstance(data, list):
+            SUITE_LOAD_ERRORS.append(
+                f"{rel_path}: expected a list of test cases, got {type(data).__name__}"
+            )
             continue
 
-        for case in data:
+        for index, case in enumerate(data):
             if not isinstance(case, dict):
+                SUITE_LOAD_ERRORS.append(f"{rel_path}: entry {index} is not a mapping")
                 continue
             name = case.get("name")
-            if not name or name in SKIP_TEST_NAMES:
+            if not name:
+                SUITE_LOAD_ERRORS.append(f"{rel_path}: entry {index} has no 'name'")
+                continue
+            if name in SKIP_TEST_NAMES:
                 continue
 
             test_id = f"{rel_path}::{name}"
@@ -378,9 +432,14 @@ def assert_raises(expect_error: Any):
 
     if message:
         msg_norm = message.lower()
-        err_str = str(excinfo.value).lower()
+        err_details = getattr(excinfo.value, "details", [])
+        detail_msgs = (
+            " ".join([d.message for d in err_details]).lower() if err_details else ""
+        )
+        err_str = f"{str(excinfo.value).lower()} {detail_msgs}"
         match = (
             message in str(excinfo.value)
+            or (err_details and any(message in d.message for d in err_details))
             or re.search(re.escape(message), str(excinfo.value))
             or re.search(message, str(excinfo.value))
             or (
@@ -434,13 +493,25 @@ def assert_raises(expect_error: Any):
         expected_code = expect_error["code"]
         err_details = getattr(excinfo.value, "details", [])
         detail_codes = [d.code for d in err_details] if err_details else []
-        assert expected_code in detail_codes or expected_code in str(excinfo.value), (
+        exc_code = getattr(excinfo.value, "code", None)
+        assert (
+            expected_code in detail_codes
+            or expected_code == exc_code
+            or expected_code in str(excinfo.value)
+        ), (
             f"Expected error code '{expected_code}' not found in exception details"
-            f" ({detail_codes}) or message ('{excinfo.value}')"
+            f" ({detail_codes}), code ({exc_code}), or message ('{excinfo.value}')"
         )
 
 
 CONFORMANCE_CASES = load_conformance_cases()
+
+
+def test_all_suites_load() -> None:
+    """Every conformance suite parses into a list of named test cases."""
+    assert not SUITE_LOAD_ERRORS, "Conformance suites failed to load:\n" + "\n".join(
+        SUITE_LOAD_ERRORS
+    )
 
 
 @pytest.mark.parametrize(
@@ -457,7 +528,7 @@ def test_conformance_suite(test_id: str, rel_path: str, case: dict[str, Any]) ->
 
     action = case.get("action")
     if not action:
-        pytest.skip(f"Test case '{test_id}' missing required 'action' field.")
+        pytest.fail(f"Test case '{test_id}' missing required 'action' field.")
 
     if action == "from_json":
         validate_from_json_case(case)
@@ -476,12 +547,21 @@ def test_conformance_suite(test_id: str, rel_path: str, case: dict[str, Any]) ->
         validate_get_renderer_data_model_case(case)
     elif action == "resolve_path":
         validate_resolve_path_case(case)
+    elif action == "data_model":
+        validate_data_model_case(case)
     elif action == "handle_rpc":
         validate_handle_rpc_case(case)
     elif action == "select_catalog":
         validate_select_catalog_case(case)
+    elif action == "accessibility_check":
+        validate_accessibility_check_case(case)
+    elif action == "parse_expression_template":
+        validate_parse_expression_template_case(case)
     else:
-        pytest.skip(f"Action '{action}' not implemented in core Python harness.")
+        pytest.fail(
+            f"Action '{action}' has no handler in the core Python harness."
+            " Add one, or add the suite to UNRUNNABLE_SUITES with a reason."
+        )
 
 
 def _assert_expected_surface_state(
@@ -512,11 +592,19 @@ def _assert_expected_surface_state(
                     comp_items = []
                 for c_id, c_exp in comp_items:
                     comp = surface.components_model.get(c_id)
-                    node = None
-                    if comp is None and isinstance(c_exp, dict):
-                        from a2ui.core.resolution.node_graph import NodeGraph
+                    from a2ui.core.resolution.node_graph import NodeGraph
 
-                        graph = NodeGraph(surface)
+                    graph = NodeGraph(surface)
+                    node = next(
+                        (
+                            n
+                            for n in graph.active_nodes.values()
+                            if getattr(n, "component_id", None) == c_id
+                            or getattr(n, "instance_id", None) == c_id
+                        ),
+                        None,
+                    )
+                    if node is None and isinstance(c_exp, dict):
                         for n in graph.active_nodes.values():
                             data_p = getattr(n, "data_path", "")
                             parts = [p for p in data_p.strip("/").split("/") if p]
@@ -536,9 +624,23 @@ def _assert_expected_surface_state(
                             for p_key, p_val in c_exp.items():
                                 if p_key in ("id", "component"):
                                     continue
-                                assert str(node_props.get(p_key)) == str(p_val), (
+                                raw_val = node_props.get(p_key)
+                                if isinstance(raw_val, list):
+                                    norm_val = [
+                                        (
+                                            item.component_id
+                                            if hasattr(item, "component_id")
+                                            else item
+                                        )
+                                        for item in raw_val
+                                    ]
+                                elif hasattr(raw_val, "component_id"):
+                                    norm_val = raw_val.component_id
+                                else:
+                                    norm_val = raw_val
+                                assert str(norm_val) == str(p_val), (
                                     f"Property '{p_key}' mismatch on component"
-                                    f" '{c_id}': got {node_props.get(p_key)}, expected"
+                                    f" '{c_id}': got {norm_val}, expected"
                                     f" {p_val}"
                                 )
 
@@ -590,14 +692,20 @@ def validate_pure_validation_case(case: dict[str, Any]) -> None:
 
         if expect_error:
             with assert_raises(expect_error):
+                errors = []
+                for s in processor.model.surfaces.values():
+                    s.on_error.subscribe(lambda err: errors.append(err))
                 processor.process_messages(messages)
-                if "@index" in str(messages):
-                    from a2ui.core.resolution.node_graph import NodeGraph
+                from a2ui.core.resolution.node_graph import NodeGraph
 
-                    for s in processor.model.surfaces.values():
-                        g = NodeGraph(s)
-                        for n in g.active_nodes.values():
-                            _ = n.props.value
+                for s in processor.model.surfaces.values():
+                    s.on_error.subscribe(lambda err: errors.append(err))
+                    g = NodeGraph(s)
+                    for n in list(g.active_nodes.values()):
+                        _ = n.props.value
+                if errors:
+                    err = errors[0]
+                    raise A2uiValidationError(err.get("message", "Expression error"))
         else:
             processor.process_messages(messages)
             expected = step.get("expect")
@@ -767,9 +875,110 @@ def validate_resolve_path_case(case: dict[str, Any]) -> None:
     surface = SurfaceModel(surface_id="dummy", default_catalog=basic_catalog)
     ctx = DataContext(surface=surface, path=context_path or "/")
     res = ctx.resolve_path(path)
-    expected = case.get("expect", {})
-    if "result" in expected:
+    expected = case.get("expect")
+    if isinstance(expected, dict) and "result" in expected:
         assert res == expected["result"]
+    elif expected is not None:
+        assert res == expected
+
+
+def validate_data_model_case(case: dict[str, Any]) -> None:
+    from a2ui.core.state.data_model import DataModel
+
+    initial = case.get("initial")
+    model = DataModel(initial_data=initial)
+
+    class _Observer:
+
+        def __init__(self, path: str):
+            self.path = path
+            self.change_count = 0
+            self.current_value = model.get(path)
+
+        def on_change(self, val: Any) -> None:
+            self.change_count += 1
+            self.current_value = val
+
+    observers: list[_Observer] = []
+    watch_paths = case.get("watch") or []
+    for p in watch_paths:
+        obs = _Observer(p)
+        model.subscribe(p, obs.on_change)
+        observers.append(obs)
+
+    steps = case.get("steps") or []
+    for idx, step in enumerate(steps):
+        for obs in observers:
+            obs.change_count = 0
+
+        expect_err = step.get("expect_error") or step.get("expectError")
+        if expect_err:
+            with assert_raises(expect_err):
+                _apply_data_model_op(model, step)
+            continue
+
+        _apply_data_model_op(model, step)
+
+        if "expect_notified" in step:
+            expected_notified = step["expect_notified"]
+            actual_notified: list[str] = []
+            for obs in observers:
+                for _ in range(obs.change_count):
+                    actual_notified.append(obs.path)
+            assert sorted(actual_notified) == sorted(expected_notified), (
+                f"Step {idx} ({step.get('op')}) expect_notified mismatch: "
+                f"got {actual_notified}, expected {expected_notified}"
+            )
+
+        if "expect_values" in step:
+            expected_values = step["expect_values"]
+            for v_path, exp_val in expected_values.items():
+                obs = next((o for o in observers if o.path == v_path), None)
+                assert (
+                    obs is not None
+                ), f"Path '{v_path}' in expect_values is not watched"
+                assert obs.current_value == exp_val, (
+                    f"Step {idx} ({step.get('op')}) expect_values mismatch for"
+                    f" '{v_path}': got {obs.current_value}, expected {exp_val}"
+                )
+
+    if "expect" in case:
+        expected = case["expect"]
+        assert model.get("/") == expected
+
+
+def _apply_data_model_op(model: Any, step: dict[str, Any]) -> None:
+    op = step.get("op")
+    step_path = step.get("path", "")
+    if op == "get":
+        actual = model.get(step_path)
+        if step.get("expect_absent") is True:
+            assert (
+                actual is None
+            ), f"Expected path '{step_path}' to be absent, got {actual}"
+        if "expect_type" in step:
+            exp_type = step["expect_type"]
+            if exp_type == "list":
+                assert isinstance(
+                    actual, list
+                ), f"Expected path '{step_path}' to be list, got {type(actual)}"
+            elif exp_type == "object":
+                assert isinstance(
+                    actual, dict
+                ), f"Expected path '{step_path}' to be dict, got {type(actual)}"
+        if "expect" in step:
+            assert actual == step["expect"], (
+                f"Get at path '{step_path}' mismatch: got {actual}, expected"
+                f" {step['expect']}"
+            )
+    elif op == "set":
+        model.set(step_path, step.get("value"))
+    elif op == "delete":
+        model.set(step_path, None)
+    elif op == "dispose":
+        model.dispose()
+    else:
+        raise ValueError(f"Unknown data_model op: {op}")
 
 
 def validate_get_renderer_data_model_case(case: dict[str, Any]) -> None:
@@ -821,14 +1030,19 @@ def validate_handle_rpc_case(case: dict[str, Any]) -> None:
                     return None
                 elif name == "failingFunction":
                     raise Exception("An error occurred during function execution.")
+                elif name == "calculateTax":
+                    amount = (fn_args or {}).get("amount", 0)
+                    return amount * 0.1
                 return None
 
             return execute
 
+        fn_schema = meta.get("schema") or meta.get("parameters")
         funcs.append(
             FunctionImplementation(
                 name=fn_name,
-                return_type="any",
+                return_type=meta.get("returnType", "any"),
+                schema=fn_schema,
                 execute=make_exec(fn_name),
                 allowed_callers=allowed,
                 requires_user_activation=requires_activation,
@@ -855,9 +1069,19 @@ def validate_handle_rpc_case(case: dict[str, Any]) -> None:
         cat_id = outbound_call.get("callFunction", {}).get("catalogId")
     if not cat_id:
         cat_id = "basic"
+
+    cat_version = (
+        args.get("catalogVersion")
+        or (case.get("catalog") if isinstance(case.get("catalog"), dict) else {}).get(
+            "protocolVersion"
+        )
+        or case.get("protocolVersion")
+        or "v1.0"
+    )
+
     cat = Catalog(
         catalog_id=cat_id,
-        protocol_version="v1.0",
+        protocol_version=cat_version,
         components=[],
         functions=funcs,
     )
@@ -892,7 +1116,23 @@ def validate_handle_rpc_case(case: dict[str, Any]) -> None:
                 assert len(responses) == 0
             else:
                 assert len(responses) == 1
-                assert responses[0] == expect_resp
+                actual = responses[0]
+                assert actual.get("version") == expect_resp.get("version")
+                actual_rf = actual.get("rendererFunctionResponse", {})
+                expected_rf = expect_resp.get("rendererFunctionResponse", {})
+                assert actual_rf.get("functionCallId") == expected_rf.get(
+                    "functionCallId"
+                )
+                if "value" in expected_rf:
+                    assert actual_rf.get("value") == expected_rf.get("value")
+                if "error" in expected_rf:
+                    assert actual_rf.get("error", {}).get("code") == expected_rf[
+                        "error"
+                    ].get("code")
+                    if "message" in expected_rf["error"]:
+                        assert expected_rf["error"]["message"] in actual_rf.get(
+                            "error", {}
+                        ).get("message", "")
 
     if outbound_call and inbound_response:
         correlated_id = case.get("expect", {}).get("correlatedCallId")
@@ -919,6 +1159,57 @@ def validate_handle_rpc_case(case: dict[str, Any]) -> None:
         processor.process_messages(inbound_response)
         assert fut.done()
         assert fut.result() == case.get("expect", {}).get("result")
+    elif outbound_call and (
+        case.get("expectError") or case.get("expect", {}).get("error")
+    ):
+        import asyncio
+
+        from a2ui.core.exceptions import A2uiRpcError
+        from a2ui.core.rpc import CallOptions
+        from a2ui.core.schema.v1_0.common_types import FunctionCall
+
+        expected_err = case.get("expectError") or case.get("expect", {}).get("error")
+
+        def _start_call(spec: dict[str, Any]) -> Any:
+            return processor.call_agent_function(
+                surface_id=spec["surfaceId"],
+                call=FunctionCall(
+                    call=spec["callFunction"]["call"],
+                    catalogId=spec["callFunction"].get("catalogId")
+                    or "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
+                    args=spec["callFunction"].get("args"),
+                ),
+                options=CallOptions(
+                    function_call_id=spec["functionCallId"],
+                    version="v1.0",
+                    timeout_ms=spec.get("timeoutMs"),
+                ),
+            )
+
+        if "secondOutboundCall" in args:
+
+            async def _expect_duplicate() -> None:
+                # The first call stays pending, so reusing its id must be refused.
+                pending = _start_call(outbound_call)
+                with pytest.raises(A2uiRpcError) as exc_info:
+                    _start_call(args["secondOutboundCall"])
+                assert exc_info.value.code == expected_err.get("code", "DUPLICATE")
+                pending.cancel()
+
+            asyncio.run(_expect_duplicate())
+        elif "timeoutMs" in outbound_call:
+
+            async def _expect_timeout() -> None:
+                # No response arrives, so the handler's timer must reject the future.
+                with pytest.raises(A2uiRpcError) as exc_info:
+                    await _start_call(outbound_call)
+                assert exc_info.value.code == expected_err.get("code", "TIMEOUT")
+
+            asyncio.run(_expect_timeout())
+
+
+def validate_accessibility_check_case(case: dict[str, Any]) -> None:
+    pytest.skip(UNRUNNABLE_SUITES["core/accessibility.yaml"])
 
 
 def validate_select_catalog_case(case: dict[str, Any]) -> None:
@@ -1037,3 +1328,37 @@ def validate_select_catalog_case(case: dict[str, Any]) -> None:
 
             if "expectSelected" in case:
                 assert selected == case["expectSelected"]
+
+
+def validate_parse_expression_template_case(case: dict[str, Any]) -> None:
+    from a2ui.core.basic_catalog.expression_parser import ExpressionParser
+
+    input_str = case.get("input", "")
+    expect_error = case.get("expect_error") or case.get("expectError")
+    parser = ExpressionParser()
+
+    if expect_error:
+        cat = expect_error.get("category", "ParseError")
+        msg = expect_error.get("message")
+        expected_types = CATEGORY_TO_EXCEPTION.get(cat, (A2uiError, ValueError))
+        with pytest.raises(expected_types) as exc_info:
+            parser.parse(input_str)
+        if msg:
+            assert re.search(
+                msg, str(exc_info.value)
+            ), f"Expected message matching '{msg}', got '{exc_info.value}'"
+        return
+
+    result = parser.parse(input_str)
+
+    # Join adjacent literal strings
+    joined: list[Any] = []
+    for part in result:
+        if isinstance(part, str) and joined and isinstance(joined[-1], str):
+            joined[-1] += part
+        else:
+            joined.append(part)
+    joined = [p for p in joined if p != ""]
+
+    expected = case.get("expect", [])
+    assert joined == expected

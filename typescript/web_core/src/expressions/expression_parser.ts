@@ -39,14 +39,6 @@ export const MAX_EXPRESSION_PARTS = 1_000;
  * Supports literals (strings, numbers, booleans), path-based data bindings, and
  * nested function calls with named arguments.
  */
-/**
- * Digits, an optional decimal point, and optional further digits.
- *
- * Every client implementation accepts a trailing point (`1.`) today and none
- * accepts a second point (`1.2.3`), so the grammar is written to keep that.
- */
-const NUMBER_LITERAL = /^\d+\.?\d*$/;
-
 export class ExpressionParser {
   /** The maximum allowed recursion depth for nested expressions to prevent stack overflows. */
   public static readonly MAX_DEPTH = 100;
@@ -69,7 +61,10 @@ export class ExpressionParser {
         `Expression template length (${input.length}) exceeds maximum limit (${MAX_EXPRESSION_TEMPLATE_LENGTH})`,
       );
     }
-    if (!input || !input.includes('${')) {
+    if (!input) {
+      return [];
+    }
+    if (!input.includes('${')) {
       return [input];
     }
 
@@ -184,7 +179,10 @@ export class ExpressionParser {
     if (scanner.matchesString("'") || scanner.matchesString('"')) {
       return this.parseStringLiteral(scanner);
     }
-    if (this.isDigit(scanner.peek())) {
+    if (
+      this.isDigit(scanner.peek()) ||
+      ((scanner.peek() === '-' || scanner.peek() === '+') && this.isDigit(scanner.peek(1)))
+    ) {
       return this.parseNumberLiteral(scanner);
     }
     if (scanner.matchesKeyword('true')) return true;
@@ -284,13 +282,23 @@ export class ExpressionParser {
 
   private parseNumberLiteral(scanner: Scanner): number {
     const start = scanner.pos;
+    if (scanner.peek() === '-' || scanner.peek() === '+') {
+      scanner.advance();
+    }
     while (!scanner.isAtEnd() && (this.isDigit(scanner.peek()) || scanner.peek() === '.')) {
       scanner.advance();
     }
+    if (!scanner.isAtEnd() && (scanner.peek() === 'e' || scanner.peek() === 'E')) {
+      scanner.advance();
+      if (!scanner.isAtEnd() && (scanner.peek() === '+' || scanner.peek() === '-')) {
+        scanner.advance();
+      }
+      while (!scanner.isAtEnd() && this.isDigit(scanner.peek())) {
+        scanner.advance();
+      }
+    }
     const text = scanner.input.substring(start, scanner.pos);
-    // The grammar is spelled out here rather than delegated to the platform's
-    // number parser, so that every implementation accepts the same literals.
-    if (!NUMBER_LITERAL.test(text)) {
+    if (!/^[+-]?\d+\.?\d*(?:[eE][+-]?\d+)?$/.test(text)) {
       throw new A2uiExpressionError(`Invalid number literal: '${text}'`);
     }
     return Number(text);

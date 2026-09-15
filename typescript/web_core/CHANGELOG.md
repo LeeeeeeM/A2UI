@@ -1,6 +1,23 @@
 ## Unreleased
 
 - (v0_9) Enable setting and getting a default `MarkdownRenderer` (`setMarkdownRenderer` / `getMarkdownRenderer`) in `@a2ui/web_core/v0_9/basic_catalog` for basic catalog text components. [#2272](https://github.com/a2ui-project/a2ui/pull/2272)
+- The shared conformance suite now runs as part of `yarn test`, via a new
+  `test:conformance` script, so a conformance regression fails CI. A change
+  under `conformance/` also triggers the web CI job.
+- (v1_0) Catalog loading validates component property names, function names and
+  function argument names against UAX #31, matching the Python SDK. Previously
+  only component names were checked.
+- `GenericBinder` resolves `event.userMessage` before dispatch. As a
+  `DynamicString` it may be a `{path}` or `{call}`, and the renderer-to-agent
+  schema states it is sent already resolved; those forms were previously
+  forwarded to the agent verbatim.
+- Deleting an array index past the end of the array is now a no-op. Assigning
+  `undefined` there previously extended the array's `length`, so deleting
+  `/items/10` from a three-element array produced an eleven-element array.
+- The error raised when an `updateComponents` entry has no `id` now reads
+  `Component 'X' is missing an 'id'; entries require a valid string 'id'.`,
+  matching the Python SDK and the phrase the shared conformance suite asserts
+  on.
 
 ## 0.11.0
 

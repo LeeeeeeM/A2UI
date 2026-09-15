@@ -69,6 +69,18 @@ class A2uiRecursionError(A2uiError):
     pass
 
 
+class A2uiDataError(A2uiError):
+    """Exception raised when accessing or mutating data model with invalid paths or types."""
+
+    pass
+
+
+class A2uiExpressionError(A2uiError):
+    """Exception raised when parsing or evaluating expressions and functions."""
+
+    pass
+
+
 import enum
 
 

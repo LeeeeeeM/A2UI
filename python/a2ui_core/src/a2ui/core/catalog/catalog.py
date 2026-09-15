@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import deque
 from collections.abc import Mapping, Sequence
 import copy
 import re
@@ -27,7 +28,21 @@ from pydantic import BaseModel, TypeAdapter
 from ..common.semver import is_at_least_version, parse_semver
 
 
-def _generate_dynamic_type_def(type_cls: Any) -> dict[str, Any]:
+def _generate_dynamic_type_def(
+    type_cls: Any, description: str | None = None
+) -> dict[str, Any]:
+    """Derives a JSON Schema definition from a Pydantic model.
+
+    Args:
+        type_cls: Pydantic model or type alias to convert.
+        description: Description to attach to the definition. Pydantic derives
+            descriptions from docstrings, which do not match the published
+            specification wording, so the generated one is always discarded and
+            replaced by this value when given.
+
+    Returns:
+        A JSON Schema definition with Pydantic's bookkeeping keys removed.
+    """
     raw_schema = TypeAdapter(type_cls).json_schema()
     if "$defs" in raw_schema:
         del raw_schema["$defs"]
@@ -48,6 +63,8 @@ def _generate_dynamic_type_def(type_cls: Any) -> dict[str, Any]:
             ]
         raw_schema["oneOf"] = items
         del raw_schema["anyOf"]
+    if description is not None:
+        return {"description": description, **raw_schema}
     return raw_schema
 
 
@@ -69,9 +86,116 @@ def _get_dynamic_types_defs() -> dict[str, Any]:
             ),
             "type": "string",
         },
-        "DynamicString": _generate_dynamic_type_def(DynamicString),
-        "DynamicNumber": _generate_dynamic_type_def(DynamicNumber),
-        "DynamicBoolean": _generate_dynamic_type_def(DynamicBoolean),
+        "CallId": {
+            "description": "The unique identifier for a function call.",
+            "type": "string",
+        },
+        "Child": {
+            "$ref": "#/$defs/ComponentId",
+            "description": "A reference to a single child component ID.",
+        },
+        "TemplateChildList": {
+            "type": "object",
+            "description": (
+                "A template for generating a dynamic list of children from"
+                " a data model list. The `componentId` is the component"
+                " to use as a template."
+            ),
+            "properties": {
+                "componentId": {"$ref": "#/$defs/ComponentId"},
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "The path to the list of component property"
+                        " objects in the data model."
+                    ),
+                },
+            },
+            "required": ["componentId", "path"],
+            "additionalProperties": False,
+        },
+        "ChildList": {
+            "description": (
+                "A list of child component IDs or a template for generating"
+                " a dynamic list."
+            ),
+            "oneOf": [
+                {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/ComponentId"},
+                    "description": "A static list of child component IDs.",
+                },
+                {
+                    "$ref": "#/$defs/TemplateChildList",
+                },
+            ],
+        },
+        "AccessibilityAttributes": {
+            "type": "object",
+            "description": (
+                "Attributes to enhance accessibility when using assistive"
+                " technologies like screen readers or model understanding."
+            ),
+            "properties": {
+                "label": {
+                    "$ref": "#/$defs/DynamicString",
+                    "description": (
+                        "A short string, typically 1 to 3 words, used by"
+                        " assistive technologies to convey the purpose or"
+                        " intent of an element. For example, an input field"
+                        " might have an accessible label of 'User ID' or a"
+                        " button might be labeled 'Submit'."
+                    ),
+                },
+                "description": {
+                    "$ref": "#/$defs/DynamicString",
+                    "description": (
+                        "Additional information provided by assistive"
+                        " technologies about an element such as instructions,"
+                        " format requirements, or result of an action. For"
+                        " example, a mute button might have a label of 'Mute'"
+                        " and a description of 'Silences notifications about"
+                        " this conversation'."
+                    ),
+                },
+                "live": {
+                    "type": "string",
+                    "enum": ["off", "polite", "assertive"],
+                    "default": "off",
+                    "description": (
+                        "Controls screen reader announcements for dynamic updates"
+                        " (WAI-ARIA aria-live). 'polite' waits for user pause;"
+                        " 'assertive' interrupts immediately for alerts."
+                    ),
+                },
+                "hidden": {
+                    "$ref": "#/$defs/DynamicBoolean",
+                    "description": (
+                        "Hides the element and its children from assistive"
+                        " technologies when true. Default is false."
+                    ),
+                },
+            },
+            "additionalProperties": False,
+        },
+        "DynamicString": _generate_dynamic_type_def(
+            DynamicString, description="Represents a string"
+        ),
+        "DynamicNumber": _generate_dynamic_type_def(
+            DynamicNumber,
+            description=(
+                "Represents a value that can be either a literal number, a path"
+                " to a number in the data model, or a function call returning a"
+                " number."
+            ),
+        ),
+        "DynamicBoolean": _generate_dynamic_type_def(
+            DynamicBoolean,
+            description=(
+                "A boolean value that can be a literal, a path, or a function"
+                " call returning a boolean."
+            ),
+        ),
         "DynamicValue": _generate_dynamic_type_def(DynamicValue),
         "DataBinding": _generate_dynamic_type_def(DataBinding),
         "FunctionCall": _generate_dynamic_type_def(FunctionCall),
@@ -195,6 +319,61 @@ def _query_json_pointer(doc: Mapping[str, Any], pointer: str) -> Any:
     return curr
 
 
+# Schema documents whose `$defs` are addressable as local definitions once a
+# catalog has been loaded. `common_types.json` definitions are supplied from the
+# Pydantic models in `a2ui.core.schema`, and `catalog.json` definitions live in
+# the catalog document itself.
+_LOCALIZABLE_REF_DOCUMENTS: Final[tuple[str, ...]] = (
+    "common_types.json",
+    "catalog.json",
+)
+
+
+def _localize_ref(ref: str) -> str:
+    """Rewrites a cross-document `$defs` reference as a local pointer.
+
+    The published specification cross-references shared types between documents,
+    for example ``common_types.json#/$defs/ChildList``. Those pointers cannot be
+    resolved without the specification files on disk, so they are rewritten to
+    ``#/$defs/ChildList`` and satisfied from the in-memory definitions instead.
+
+    Args:
+        ref: Raw ``$ref`` string from a schema node.
+
+    Returns:
+        A local ``#/$defs/...`` pointer when the reference targets a known
+        specification document, otherwise the reference unchanged.
+    """
+    if "#/$defs/" not in ref or ref.startswith("#/"):
+        return ref
+    document, _, fragment = ref.partition("#")
+    if not any(document.endswith(name) for name in _LOCALIZABLE_REF_DOCUMENTS):
+        return ref
+    return f"#{fragment}"
+
+
+def _normalize_external_schema_refs(node: Any) -> Any:
+    """Recursively rewrites cross-document `$refs` into local `$defs` pointers.
+
+    Args:
+        node: Schema fragment to normalize.
+
+    Returns:
+        An equivalent fragment whose references are all catalog-local.
+    """
+    if isinstance(node, dict):
+        normalized: dict[str, Any] = {}
+        for key, value in node.items():
+            if key == "$ref" and isinstance(value, str):
+                normalized[key] = _localize_ref(value)
+            else:
+                normalized[key] = _normalize_external_schema_refs(value)
+        return normalized
+    if isinstance(node, list):
+        return [_normalize_external_schema_refs(item) for item in node]
+    return node
+
+
 def inline_local_refs(
     node: Any, root_catalog: Mapping[str, Any], visited: set[str] | None = None
 ) -> Any:
@@ -259,6 +438,23 @@ def _is_ref(item: Any, target_ref: str) -> bool:
 
 def _is_type(item: Any, target_type: str) -> bool:
     return isinstance(item, dict) and item.get("type") == target_type
+
+
+def _collect_defs_refs(node: Any, refs: set[str]) -> None:
+    """Recursively collects local #/$defs/ reference targets."""
+    if isinstance(node, dict):
+        if (
+            "$ref" in node
+            and isinstance(node["$ref"], str)
+            and node["$ref"].startswith("#/$defs/")
+        ):
+            target_def = node["$ref"][len("#/$defs/") :].split("/")[0]
+            refs.add(target_def)
+        for v in node.values():
+            _collect_defs_refs(v, refs)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_defs_refs(item, refs)
 
 
 def _clean_schema_node(
@@ -391,17 +587,27 @@ class Catalog(Generic[TComponent, TFunction]):
     def __init__(
         self,
         catalog_id: str,
-        protocol_version: str | None = None,
+        protocol_version: str,
         components: list[TComponent] | None = None,
         functions: list[TFunction] | None = None,
         theme_schema: dict[str, Any] | None = None,
         instructions: str | None = None,
+        defs: dict[str, Any] | None = None,
+        common_types_defs: dict[str, Any] | None = None,
     ):
         if not protocol_version:
             raise ValueError("protocol_version must be provided.")
         self.catalog_id = catalog_id
         self.protocol_version = protocol_version
         self.instructions = instructions
+        self.defs: dict[str, Any] = copy.deepcopy(defs) if defs else {}
+        # Shared type definitions supplied by the catalog's own common types
+        # document. These take precedence over the built-in definitions derived
+        # from the Pydantic schema models, so a catalog that ships a reduced or
+        # customized common types document validates against that document.
+        self.common_types_defs: dict[str, Any] = (
+            copy.deepcopy(common_types_defs) if common_types_defs else {}
+        )
 
         validate_identifiers = is_at_least_version(protocol_version, "1.0")
 
@@ -441,6 +647,10 @@ class Catalog(Generic[TComponent, TFunction]):
             schema["instructions"] = self.instructions
 
         defs: dict[str, Any] = {}
+        if self.defs:
+            for def_name, def_schema in self.defs.items():
+                if def_name not in ("anyComponent", "anyFunction"):
+                    defs[def_name] = copy.deepcopy(def_schema)
         if self.theme_schema:
             defs["theme"] = self.theme_schema
 
@@ -549,7 +759,21 @@ class Catalog(Generic[TComponent, TFunction]):
             ):
                 referenced_dynamics.add("DataBinding")
                 referenced_dynamics.add("FunctionCall")
-            dynamic_defs = _get_dynamic_types_defs()
+            dynamic_defs = {
+                **_get_dynamic_types_defs(),
+                **self.common_types_defs,
+            }
+            queue = deque(referenced_dynamics)
+            while queue:
+                curr = queue.popleft()
+                if curr in dynamic_defs:
+                    found_refs: set[str] = set()
+                    _collect_defs_refs(dynamic_defs[curr], found_refs)
+                    for target in found_refs:
+                        if target not in referenced_dynamics:
+                            referenced_dynamics.add(target)
+                            queue.append(target)
+
             for dyn in sorted(referenced_dynamics):
                 if dyn in dynamic_defs:
                     if dyn not in cleaned_schema["$defs"]:
@@ -598,8 +822,22 @@ class Catalog(Generic[TComponent, TFunction]):
         catalog_schema: Mapping[str, Any],
         protocol_version: str | None = None,
         catalog_id: str | None = None,
+        common_types_schema: Mapping[str, Any] | None = None,
     ) -> "Catalog[ComponentApi, FunctionApi]":
-        """Constructs a schema-only Catalog directly from raw JSON Schema."""
+        """Constructs a schema-only Catalog directly from raw JSON Schema.
+
+        Args:
+            catalog_schema: Raw catalog JSON Schema document.
+            protocol_version: Protocol version, if not declared in the schema.
+            catalog_id: Catalog identifier, if not declared in the schema.
+            common_types_schema: Optional common types document supplying the
+                shared definitions the catalog references. When omitted, shared
+                types resolve from the built-in Pydantic-derived definitions.
+
+        Returns:
+            A catalog whose schema is self-contained, with every cross-document
+            reference rewritten to a local ``#/$defs/...`` pointer.
+        """
         catalog_id = catalog_id or catalog_schema.get("catalogId")
         if not catalog_id:
             raise A2uiCatalogError(
@@ -610,7 +848,12 @@ class Catalog(Generic[TComponent, TFunction]):
         if not p_ver:
             raise ValueError("protocol_version must be provided.")
 
-        inlined_catalog_schema = inline_local_refs(catalog_schema, catalog_schema)
+        normalized_catalog_schema = _normalize_external_schema_refs(
+            dict(catalog_schema)
+        )
+        inlined_catalog_schema = inline_local_refs(
+            normalized_catalog_schema, normalized_catalog_schema
+        )
 
         components_map = inlined_catalog_schema.get("components", {})
         any_comp_refs = (
@@ -711,6 +954,12 @@ class Catalog(Generic[TComponent, TFunction]):
                         )
                     )
 
+        common_types_defs = None
+        if common_types_schema:
+            raw_defs = common_types_schema.get("$defs")
+            if isinstance(raw_defs, dict):
+                common_types_defs = _normalize_external_schema_refs(dict(raw_defs))
+
         cat = Catalog[ComponentApi, FunctionApi](
             catalog_id=catalog_id,
             protocol_version=p_ver,
@@ -720,5 +969,7 @@ class Catalog(Generic[TComponent, TFunction]):
             or inlined_catalog_schema.get("$defs", {}).get("theme")
             or {},
             instructions=inlined_catalog_schema.get("instructions"),
+            defs=inlined_catalog_schema.get("$defs"),
+            common_types_defs=common_types_defs,
         )
         return cat

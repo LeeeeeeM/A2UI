@@ -16,10 +16,13 @@ from typing import (
     Any,
     Generic,
     Type,
+    cast,
 )
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 from jsonschema import Draft202012Validator
+import jsonschema.exceptions
+import referencing.exceptions
 from ..exceptions import A2uiValidationError, A2uiErrorDetail, A2uiCatalogError
 from ..catalog.catalog import Catalog, TComponent, TFunction
 from ..processing.format_pydantic_error import format_validation_error
@@ -253,6 +256,11 @@ class PayloadValidator(Generic[TComponent, TFunction]):
             "$defs": {**defs, **comp_schema.get("$defs", {})},
             **{k: v for k, v in comp_schema.items() if k != "$defs"},
         }
+        if isinstance(base_schema, dict):
+            if "functions" in base_schema and "functions" not in full_schema:
+                full_schema["functions"] = base_schema["functions"]
+            if "components" in base_schema and "components" not in full_schema:
+                full_schema["components"] = base_schema["components"]
         try:
             validator = Draft202012Validator(full_schema)
             props = dict(comp)
@@ -286,6 +294,14 @@ class PayloadValidator(Generic[TComponent, TFunction]):
                         message=err.message,
                     )
                 )
+        except referencing.exceptions.Unresolvable as ref_err:
+            errors.append(
+                A2uiErrorDetail(
+                    path=f"components.{comp_id or 'unknown'}",
+                    code="invalid_reference",
+                    message=str(ref_err),
+                )
+            )
         except Exception:
             pass
 
@@ -481,6 +497,11 @@ class PayloadValidator(Generic[TComponent, TFunction]):
         """Validates function arguments against a JSON Schema dict definition."""
         param_schema = None
         defs = base_schema.get("$defs", {}) if isinstance(base_schema, dict) else {}
+        base_defs = (
+            base_schema.get("$defs", {}) if isinstance(base_schema, dict) else {}
+        )
+        fn_defs = fn_schema.get("$defs", {}) if isinstance(fn_schema, dict) else {}
+        defs = {**base_defs, **fn_defs}
         if "parameters" in fn_schema and isinstance(fn_schema["parameters"], dict):
             param_schema = {
                 "$schema": JSON_SCHEMA_DRAFT_2020_12,
@@ -512,6 +533,11 @@ class PayloadValidator(Generic[TComponent, TFunction]):
             }
 
         if param_schema:
+            if isinstance(base_schema, dict):
+                if "functions" in base_schema and "functions" not in param_schema:
+                    param_schema["functions"] = base_schema["functions"]
+                if "components" in base_schema and "components" not in param_schema:
+                    param_schema["components"] = base_schema["components"]
             try:
                 fn_validator = Draft202012Validator(param_schema)
                 schema_errors = sorted(
@@ -537,6 +563,13 @@ class PayloadValidator(Generic[TComponent, TFunction]):
                     raise A2uiValidationError(summary, details=errors)
             except A2uiValidationError:
                 raise
+            except referencing.exceptions.Unresolvable as ref_err:
+                detail = A2uiErrorDetail(
+                    path=f"functions.{name}",
+                    code="invalid_reference",
+                    message=str(ref_err),
+                )
+                raise A2uiValidationError(str(ref_err), details=[detail]) from ref_err
             except Exception:
                 pass
 
@@ -567,6 +600,14 @@ class PayloadValidator(Generic[TComponent, TFunction]):
                 "$defs": defs,
                 **theme_schema,
             }
+            if isinstance(base_schema, dict):
+                if "functions" in base_schema and "functions" not in full_theme_schema:
+                    full_theme_schema["functions"] = base_schema["functions"]
+                if (
+                    "components" in base_schema
+                    and "components" not in full_theme_schema
+                ):
+                    full_theme_schema["components"] = base_schema["components"]
             try:
                 theme_validator = Draft202012Validator(full_theme_schema)
                 schema_errors = sorted(
@@ -585,6 +626,13 @@ class PayloadValidator(Generic[TComponent, TFunction]):
                     raise A2uiValidationError(summary, details=details)
             except A2uiValidationError:
                 raise
+            except referencing.exceptions.Unresolvable as ref_err:
+                detail = A2uiErrorDetail(
+                    path="theme",
+                    code="invalid_reference",
+                    message=str(ref_err),
+                )
+                raise A2uiValidationError(str(ref_err), details=[detail]) from ref_err
             except Exception:
                 pass
 
