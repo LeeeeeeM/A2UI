@@ -513,3 +513,113 @@ def test_component_node_to_dict_excludes_nested_setters():
             "title": "My Title",
         }
     }
+
+
+def test_exception_hierarchy_normalization():
+    from a2ui.core.exceptions import (
+        A2uiError,
+        A2uiValidationError,
+        A2uiIntegrityError,
+        A2uiRecursionError,
+        RpcErrorCode,
+    )
+
+    assert issubclass(A2uiIntegrityError, A2uiValidationError)
+    assert issubclass(A2uiRecursionError, A2uiValidationError)
+    assert issubclass(A2uiValidationError, A2uiError)
+
+    expected_codes = {
+        "INVALID_FUNCTION_CALL",
+        "EXECUTION_ERROR",
+        "UNKNOWN_FUNCTION",
+        "UNKNOWN_ERROR",
+        "CANCELLED",
+        "TIMEOUT",
+        "DISPOSED",
+        "NO_LISTENER",
+        "DUPLICATE",
+    }
+    actual_codes = {member.value for member in RpcErrorCode}
+    assert actual_codes == expected_codes
+
+
+def test_package_root_and_resolution_exports():
+    import a2ui.core
+    import a2ui.core.resolution
+
+    for name in a2ui.core.__all__:
+        assert hasattr(a2ui.core, name), f"Missing export {name} in a2ui.core"
+
+    for name in [
+        "ComponentNode",
+        "ResolvedBinding",
+        "WritableBinding",
+        "is_writable",
+        "ComponentContext",
+        "DataContext",
+        "GenericBinder",
+        "MissingDataBindingWarning",
+        "NodeGraph",
+    ]:
+        assert hasattr(
+            a2ui.core.resolution, name
+        ), f"Missing export {name} in a2ui.core.resolution"
+
+    # Verify ResolvedBinding and WritableBinding behavior
+    rb = a2ui.core.resolution.ResolvedBinding("val")
+    assert rb.value == "val"
+    assert not a2ui.core.resolution.is_writable(rb)
+
+    assigned = []
+    wb = a2ui.core.resolution.WritableBinding(
+        "val", lambda v: assigned.append(v), "/path"
+    )
+    assert wb.value == "val"
+    assert wb.path == "/path"
+    assert a2ui.core.resolution.is_writable(wb)
+    wb.set("new_val")
+    assert assigned == ["new_val"]
+
+    # Verify __slots__ prevents arbitrary attributes
+    with pytest.raises(AttributeError):
+        rb.undeclared = True  # type: ignore[attr-defined]
+
+    with pytest.raises(AttributeError):
+        wb.undeclared = True  # type: ignore[attr-defined]
+
+
+def test_resolved_binding_equality():
+    """Verifies value-based equality for ResolvedBinding and WritableBinding."""
+    from a2ui.core.resolution import ResolvedBinding, WritableBinding, is_writable
+
+    rb1 = ResolvedBinding("hello")
+    rb2 = ResolvedBinding("hello")
+    rb3 = ResolvedBinding("world")
+
+    assert rb1 == rb2
+    assert rb1 != rb3
+    assert rb1 != "hello"
+
+    setter1 = lambda v: None
+    setter2 = lambda v: None
+    wb1 = WritableBinding("hello", setter1, "/path/1")
+    wb2 = WritableBinding("hello", setter2, "/path/1")
+    wb3 = WritableBinding("hello", setter1, "/path/2")
+    wb4 = WritableBinding("world", setter1, "/path/1")
+
+    # Writable bindings with same value and same path are equal regardless of setter closure
+    assert wb1 == wb2
+    assert wb1 != wb3
+    assert wb1 != wb4
+    assert wb1 != "hello"
+
+    # ResolvedBinding and WritableBinding are not equal even with the same value
+    assert rb1 != wb1
+    assert wb1 != rb1
+
+    # Generic type narrowing with is_writable
+    int_rb: ResolvedBinding[int] = WritableBinding(42, lambda v: None, "/val")
+    if is_writable(int_rb):
+        # Type checker should recognize int_rb as WritableBinding[int]
+        assert int_rb.value == 42
+        assert int_rb.path == "/val"
