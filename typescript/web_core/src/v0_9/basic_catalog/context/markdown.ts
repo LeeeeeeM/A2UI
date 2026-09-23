@@ -16,13 +16,13 @@
 
 import {createContext} from '@lit/context';
 
-import type {MarkdownRenderer} from '../../../rendering/markdown.js';
+import type {MarkdownRenderer} from '../../../common/markdown.js';
 
 export type {
   MarkdownRenderer,
   MarkdownRendererOptions,
   MarkdownRendererTagClassMap,
-} from '../../../rendering/markdown.js';
+} from '../../../common/markdown.js';
 
 /**
  * The markdown renderer context.
