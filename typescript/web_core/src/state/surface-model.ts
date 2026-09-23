@@ -21,20 +21,36 @@ import {EventEmitter, EventSource} from '../common/events.js';
 
 /** Action payload emitted by a renderer component. */
 export interface ActionPayload {
+  /** Name of the action or function being invoked. */
   name: string;
+  /** Identifier of the surface where the action originated. */
   surfaceId: string;
+  /** Identifier of the component that triggered the action. */
   sourceComponentId: string;
+  /** ISO 8601 timestamp recorded when the action was dispatched. */
   timestamp: string;
+  /** Context parameters or arguments passed with the action. */
   context: Record<string, unknown>;
+  /**
+   * Identifier of the catalog that declares the invoked function, when the
+   * payload named one explicitly. Absent when the surface's default catalog
+   * resolved the call.
+   */
+  catalogId?: string;
   [key: string]: unknown;
 }
 
 /** Error payload emitted by a surface. */
 export interface A2uiErrorPayload {
+  /** Machine-readable error code identifying the error category. */
   code: string;
+  /** Human-readable error message describing the failure. */
   message: string;
+  /** Identifier of the surface where the error occurred, if applicable. */
   surfaceId?: string;
+  /** Expression string or function name that caused the error, if applicable. */
   expression?: string;
+  /** Additional diagnostic details or validation issues. */
   details?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -72,31 +88,69 @@ export class SurfaceModel<
   readonly onError: EventSource<A2uiErrorPayload> = this._onError;
 
   /**
+   * Catalogs available to this surface, keyed by catalog ID.
+   *
+   * Payloads on this surface may select any of these catalogs by `catalogId`.
+   * Includes the surface's {@link defaultCatalog} under its identifier.
+   */
+  readonly availableCatalogs: ReadonlyMap<string, Catalog<T, F>>;
+
+  /**
    * Initializes a new `SurfaceModel` instance.
    *
-   * @param id The unique identifier for this surface.
-   * @param catalog The component catalog used by this surface.
-   * @param theme The theme to apply to this surface.
-   * @param sendDataModel If true, the renderer will send the full data model.
+   * @param id Unique identifier for this surface.
+   * @param defaultCatalog Catalog that resolves components and functions that
+   *   do not name a catalog explicitly.
+   * @param availableCatalogs Every catalog a payload on this surface may select
+   *   by `catalogId`, keyed by that identifier. The message processor populates
+   *   it with the catalogs whose protocol version is compatible with the
+   *   surface's own.
+   * @param theme Theme to apply to this surface.
+   * @param sendDataModel Whether the renderer sends the full data model with actions.
    * @param dataModel Optional custom DataModel instance. If provided, the SurfaceModel assumes
    *   full ownership of its lifecycle and will dispose it when dispose() is called.
    */
   constructor(
     readonly id: string,
-    readonly catalog: Catalog<T, F>,
+    /**
+     * Catalog that resolves components and functions that do not name a
+     * catalog explicitly.
+     */
+    readonly defaultCatalog: Catalog<T, F>,
+    availableCatalogs: ReadonlyMap<string, Catalog<T, F>> = new Map(),
     readonly theme: any = {},
     readonly sendDataModel: boolean = false,
     dataModel?: DataModel,
   ) {
+    const catalogs = new Map(availableCatalogs);
+    if (defaultCatalog?.id && !catalogs.has(defaultCatalog.id)) {
+      catalogs.set(defaultCatalog.id, defaultCatalog);
+    }
+    this.availableCatalogs = catalogs;
     this.dataModel = dataModel ?? new DataModel({});
-    this.componentsModel = new SurfaceComponentsModel(catalog);
+    this.componentsModel = new SurfaceComponentsModel(defaultCatalog);
+  }
+
+  /**
+   * The surface's default catalog.
+   *
+   * @deprecated Use {@link defaultCatalog}. Renamed for symmetry with the other
+   *   SDKs now that a surface can carry more than one catalog. This alias will
+   *   be removed in a future release.
+   */
+  get catalog(): Catalog<T, F> {
+    return this.defaultCatalog;
   }
 
   /**
    * Dispatches an action from this surface to registered listeners.
    *
-   * @param payload The action payload (name/call and context/args) to dispatch.
-   * @param sourceComponentId The ID of the component that triggered the action.
+   * Resolves action payload details (event or function call), propagates any
+   * explicit `catalogId`, and emits an `ActionPayload` via `onAction`.
+   *
+   * @param payload Action payload (name/call and context/args) to dispatch.
+   * @param sourceComponentId Identifier of the component that triggered the action.
+   * @returns A promise that resolves once all registered listeners have processed the action.
    */
   async dispatchAction(payload: any, sourceComponentId: string): Promise<void> {
     if (payload && typeof payload === 'object') {
@@ -136,6 +190,12 @@ export class SurfaceModel<
         context,
       };
 
+      // Only set the key when the payload named a catalog, so listeners can
+      // distinguish an explicit override from default-catalog resolution.
+      if (typeof eventPayload.catalogId === 'string' && eventPayload.catalogId) {
+        actionToDispatch.catalogId = eventPayload.catalogId;
+      }
+
       await this._onAction.emit(actionToDispatch);
     }
   }
@@ -143,7 +203,8 @@ export class SurfaceModel<
   /**
    * Dispatches an error from this surface to registered listeners.
    *
-   * @param error The error object to dispatch, conforming to renderer_to_agent schema.
+   * @param error Error payload to dispatch, conforming to the renderer-to-agent schema.
+   * @returns A promise that resolves once all registered listeners have processed the error.
    */
   async dispatchError(error: A2uiErrorPayload): Promise<void> {
     await this._onError.emit({

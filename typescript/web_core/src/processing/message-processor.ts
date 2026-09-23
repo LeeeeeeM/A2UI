@@ -507,6 +507,45 @@ export class MessageProcessor<T extends ComponentApi = ComponentApi> {
   }
 
   /**
+   * Resolves the DataContext for an inbound RPC callRendererFunction operation.
+   *
+   * @param op Operation containing optional catalog and function call identifiers.
+   * @returns A DataContext attached to an existing matching surface or a fallback surface.
+   */
+  private resolveRpcDataContext(op: {catalogId?: string; functionCallId?: string}): DataContext {
+    const targetCatalog =
+      (op.catalogId ? this.catalogs.find(c => c.id === op.catalogId) : undefined) ??
+      this.catalogs[0];
+    const surface =
+      (op.catalogId
+        ? Array.from(this.model.surfacesMap.values()).find(
+            s => s.defaultCatalog?.id === op.catalogId || s.availableCatalogs?.has(op.catalogId!),
+          )
+        : undefined) ?? this.model.surfacesMap.values().next().value;
+    if (surface) {
+      return new DataContext(surface, '/');
+    }
+    const fallbackSurfaceId = `_rpc_fallback_${op.functionCallId || 'default'}`;
+    const availableCatalogs = new Map<string, Catalog<T>>();
+    for (const cat of this.catalogs) {
+      if (
+        targetCatalog?.protocolVersion &&
+        cat.protocolVersion &&
+        isCatalogVersionCompatible(targetCatalog.protocolVersion, cat.protocolVersion)
+      ) {
+        availableCatalogs.set(cat.id, cat);
+      }
+    }
+    if (targetCatalog) {
+      availableCatalogs.set(targetCatalog.id, targetCatalog);
+    }
+    return new DataContext(
+      new SurfaceModel(fallbackSurfaceId, targetCatalog, availableCatalogs),
+      '/',
+    );
+  }
+
+  /**
    * Processes a single canonical internal operation.
    *
    * @param op The internal operation to execute.
@@ -514,17 +553,7 @@ export class MessageProcessor<T extends ComponentApi = ComponentApi> {
    */
   processOperation(op: InternalOperation, context?: ExecutionContext): void {
     if (op.type === 'callRendererFunction') {
-      const targetCatalog =
-        (op.catalogId ? this.catalogs.find(c => c.id === op.catalogId) : undefined) ??
-        this.catalogs[0];
-      const surface =
-        (op.catalogId
-          ? Array.from(this.model.surfacesMap.values()).find(s => s.catalog?.id === op.catalogId)
-          : undefined) ?? this.model.surfacesMap.values().next().value;
-      const fallbackSurfaceId = `_rpc_fallback_${op.functionCallId || 'default'}`;
-      const dataContext = surface
-        ? new DataContext(surface, '/')
-        : new DataContext(new SurfaceModel(fallbackSurfaceId, targetCatalog), '/');
+      const dataContext = this.resolveRpcDataContext(op);
       const isUserActivated = context?.isUserActivated ?? op.isUserActivated ?? false;
       const callMsg: CallRendererFunctionMessage = {
         version: (op.version ?? this.version ?? 'v1.0') as 'v1.0',
@@ -551,17 +580,7 @@ export class MessageProcessor<T extends ComponentApi = ComponentApi> {
     context?: ExecutionContext,
   ): Promise<RendererFunctionResponseMessage | null> {
     if (op.type === 'callRendererFunction') {
-      const targetCatalog =
-        (op.catalogId ? this.catalogs.find(c => c.id === op.catalogId) : undefined) ??
-        this.catalogs[0];
-      const surface =
-        (op.catalogId
-          ? Array.from(this.model.surfacesMap.values()).find(s => s.catalog?.id === op.catalogId)
-          : undefined) ?? this.model.surfacesMap.values().next().value;
-      const fallbackSurfaceId = `_rpc_fallback_${op.functionCallId || 'default'}`;
-      const dataContext = surface
-        ? new DataContext(surface, '/')
-        : new DataContext(new SurfaceModel(fallbackSurfaceId, targetCatalog), '/');
+      const dataContext = this.resolveRpcDataContext(op);
       const isUserActivated = context?.isUserActivated ?? op.isUserActivated ?? false;
       const callMsg: CallRendererFunctionMessage = {
         version: (op.version ?? this.version ?? 'v1.0') as 'v1.0',
@@ -618,7 +637,22 @@ export class MessageProcessor<T extends ComponentApi = ComponentApi> {
       validatedTheme = themeResult.data;
     }
 
-    const surface = new SurfaceModel<T>(surfaceId, catalog, validatedTheme, sendDataModel ?? false);
+    // A payload may address any registered catalog by `catalogId`, but only
+    // those speaking a compatible protocol version can be resolved against this
+    // surface, so filter once here rather than at every lookup.
+    const availableCatalogs = new Map<string, Catalog<T>>(
+      this.catalogs
+        .filter(c => isCatalogVersionCompatible(c.protocolVersion, catalog.protocolVersion))
+        .map(c => [c.id, c] as const),
+    );
+
+    const surface = new SurfaceModel<T>(
+      surfaceId,
+      catalog,
+      availableCatalogs,
+      validatedTheme,
+      sendDataModel ?? false,
+    );
     this.model.addSurface(surface);
 
     if (dataModel) {
@@ -655,21 +689,20 @@ export class MessageProcessor<T extends ComponentApi = ComponentApi> {
       );
     }
 
-    let targetCatalog = surface.catalog;
+    let targetCatalog = surface.defaultCatalog;
     if (typeof rawCatalogId === 'string' && rawCatalogId) {
-      const found = this.catalogs.find(c => c.id === rawCatalogId);
+      // `availableCatalogs` is already restricted to catalogs compatible with
+      // the surface, so an entry here needs no further version check.
+      const found = surface.availableCatalogs.get(rawCatalogId);
       if (!found) {
+        const known = this.catalogs.find(c => c.id === rawCatalogId);
+        if (!known) {
+          throw new A2uiValidationError(
+            `Unknown catalog ID '${rawCatalogId}' for component '${id}'. Available catalogs: ${this.catalogs.map(c => c.id).join(', ')}`,
+          );
+        }
         throw new A2uiValidationError(
-          `Unknown catalog ID '${rawCatalogId}' for component '${id}'. Available catalogs: ${this.catalogs.map(c => c.id).join(', ')}`,
-        );
-      }
-      if (
-        found.protocolVersion &&
-        surface.catalog.protocolVersion &&
-        !isCatalogVersionCompatible(found.protocolVersion, surface.catalog.protocolVersion)
-      ) {
-        throw new A2uiValidationError(
-          `Component '${id}' catalog '${rawCatalogId}' specification version (${found.protocolVersion}) does not match surface default catalog version (${surface.catalog.protocolVersion}).`,
+          `Component '${id}' catalog '${rawCatalogId}' specification version (${known.protocolVersion}) does not match surface default catalog version (${surface.defaultCatalog.protocolVersion}).`,
         );
       }
       targetCatalog = found;
@@ -711,9 +744,9 @@ export class MessageProcessor<T extends ComponentApi = ComponentApi> {
     const rawCatalogId = (comp as any).catalogId ?? (comp as any).catalogID;
     const existing = surface.componentsModel.get(id);
 
-    let targetCatalog = surface.catalog;
+    let targetCatalog = surface.defaultCatalog;
     if (typeof rawCatalogId === 'string' && rawCatalogId) {
-      const found = this.catalogs.find(c => c.id === rawCatalogId);
+      const found = surface.availableCatalogs.get(rawCatalogId);
       if (found) {
         targetCatalog = found;
       }
@@ -849,10 +882,10 @@ export class MessageProcessor<T extends ComponentApi = ComponentApi> {
       const {id, component, ...props} = comp;
       if (typeof id !== 'string') continue;
 
-      let compCatalog = surface.catalog;
+      let compCatalog = surface.defaultCatalog;
       const rawCatalogId = (comp as any).catalogId ?? (comp as any).catalogID;
       if (typeof rawCatalogId === 'string' && rawCatalogId) {
-        const found = this.catalogs.find(c => c.id === rawCatalogId);
+        const found = surface.availableCatalogs.get(rawCatalogId);
         if (found) {
           compCatalog = found;
           compCatalogMap.set(id, found);
@@ -897,7 +930,7 @@ export class MessageProcessor<T extends ComponentApi = ComponentApi> {
     );
 
     for (const [id, componentType] of typeMap.entries()) {
-      const compCatalog = compCatalogMap.get(id) ?? surface.catalog;
+      const compCatalog = compCatalogMap.get(id) ?? surface.defaultCatalog;
       const componentApi = compCatalog.components.get(componentType);
       if (!componentApi) continue;
 
@@ -928,7 +961,7 @@ export class MessageProcessor<T extends ComponentApi = ComponentApi> {
   ): void {
     if (!this.validationConfig) return;
 
-    const candidateModel = new SurfaceComponentsModel(surface.catalog);
+    const candidateModel = new SurfaceComponentsModel(surface.defaultCatalog);
     for (const [id, comp] of surface.componentsModel.entries) {
       candidateModel.addComponent(
         new ComponentModel(id, comp.type, comp.properties, comp.catalog as Catalog<T>),
@@ -940,9 +973,9 @@ export class MessageProcessor<T extends ComponentApi = ComponentApi> {
       if (typeof id !== 'string' || !id) continue;
 
       const rawCatalogId = (comp as any).catalogId ?? (comp as any).catalogID;
-      let targetCatalog = surface.catalog;
+      let targetCatalog = surface.defaultCatalog;
       if (typeof rawCatalogId === 'string' && rawCatalogId) {
-        const found = this.catalogs.find(c => c.id === rawCatalogId);
+        const found = surface.availableCatalogs.get(rawCatalogId);
         if (found) {
           targetCatalog = found;
         }

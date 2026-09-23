@@ -37,7 +37,8 @@ const createTestDataContext = (
 ) => {
   const mockSurface = {
     dataModel: model,
-    catalog: {invoker: functionInvoker},
+    defaultCatalog: {invoker: functionInvoker},
+    availableCatalogs: new Map(),
     dispatchError,
   } as any;
   return new DataContext(mockSurface, path);
@@ -696,6 +697,7 @@ describe('DataContext', () => {
     it('validateFunctionArgs allows valid keys when schema is available', () => {
       const catalog = new Catalog(
         'test-cat',
+        '1.0',
         [],
         [
           {
@@ -720,6 +722,7 @@ describe('DataContext', () => {
     it('validateFunctionArgs throws error on unknown arguments', () => {
       const catalog = new Catalog(
         'test-cat',
+        '1.0',
         [],
         [
           {
@@ -749,6 +752,7 @@ describe('DataContext', () => {
     it('validateFunctionArgs throws error when exceeding maximum argument limits', () => {
       const catalog = new Catalog(
         'test-cat',
+        '1.0',
         [],
         [
           {
@@ -789,6 +793,7 @@ describe('DataContext', () => {
 
       const catalog = new Catalog(
         'test-cat',
+        '1.0',
         [],
         [
           {
@@ -803,7 +808,8 @@ describe('DataContext', () => {
       let dispatchedError: any = null;
       const mockSurface = {
         dataModel: customModel,
-        catalog,
+        defaultCatalog: catalog,
+        availableCatalogs: new Map(),
         dispatchError: (err: any) => {
           dispatchedError = err;
         },
@@ -828,6 +834,7 @@ describe('DataContext', () => {
     it('resolveDynamicValue dispatches error on unknown arguments', () => {
       const catalog = new Catalog(
         'test-cat',
+        '1.0',
         [],
         [
           {
@@ -842,7 +849,8 @@ describe('DataContext', () => {
       let dispatchedError: any = null;
       const mockSurface = {
         dataModel: new DataModel({}),
-        catalog,
+        defaultCatalog: catalog,
+        availableCatalogs: new Map(),
         dispatchError: (err: any) => {
           dispatchedError = err;
         },
@@ -862,6 +870,89 @@ describe('DataContext', () => {
       assert.ok(dispatchedError);
       assert.strictEqual(dispatchedError.code, 'EXPRESSION_ERROR');
       assert.match(dispatchedError.message, /Unknown argument 'junk'/);
+    });
+  });
+
+  describe('Multi-catalog function resolution', () => {
+    const makeCatalog = (id: string, result: string) =>
+      new Catalog(
+        id,
+        '1.0',
+        [],
+        [
+          {
+            name: 'greet',
+            returnType: 'string',
+            schema: z.object({}),
+            execute: () => result,
+          },
+        ],
+      );
+
+    const makeSurface = (defaultCatalog: Catalog<any>, available: Array<Catalog<any>>) =>
+      ({
+        dataModel: new DataModel({}),
+        defaultCatalog,
+        availableCatalogs: new Map(available.map(c => [c.id, c])),
+        dispatchError: () => {},
+      }) as any;
+
+    it('invokes the named catalog rather than the default', () => {
+      const primary = makeCatalog('cat-primary', 'from-primary');
+      const secondary = makeCatalog('cat-secondary', 'from-secondary');
+      const ctx = new DataContext(makeSurface(primary, [primary, secondary]), '/');
+
+      assert.strictEqual(
+        ctx.resolveDynamicValue({call: 'greet', args: {}, catalogId: 'cat-secondary'} as any),
+        'from-secondary',
+      );
+    });
+
+    it('falls back to the default catalog when the call names none', () => {
+      const primary = makeCatalog('cat-primary', 'from-primary');
+      const secondary = makeCatalog('cat-secondary', 'from-secondary');
+      const ctx = new DataContext(makeSurface(primary, [primary, secondary]), '/');
+
+      assert.strictEqual(ctx.resolveDynamicValue({call: 'greet', args: {}}), 'from-primary');
+    });
+
+    it('reports an unavailable named catalog through the surface error channel', () => {
+      const primary = makeCatalog('cat-primary', 'from-primary');
+      const surface = makeSurface(primary, [primary]);
+      let dispatchedError: any = null;
+      surface.dispatchError = (err: any) => {
+        dispatchedError = err;
+      };
+      const ctx = new DataContext(surface, '/');
+
+      assert.strictEqual(
+        ctx.resolveDynamicValue({call: 'greet', args: {}, catalogId: 'cat-missing'} as any),
+        undefined,
+      );
+      assert.ok(dispatchedError);
+      assert.strictEqual(dispatchedError.code, 'EXPRESSION_ERROR');
+      assert.match(dispatchedError.message, /Catalog not found: cat-missing/);
+    });
+
+    it('reports an unavailable named catalog on the reactive path as well', () => {
+      const primary = makeCatalog('cat-primary', 'from-primary');
+      const surface = makeSurface(primary, [primary]);
+      let dispatchedError: any = null;
+      surface.dispatchError = (err: any) => {
+        dispatchedError = err;
+      };
+      const ctx = new DataContext(surface, '/');
+
+      const sub = ctx.subscribeDynamicValue(
+        {call: 'greet', args: {}, catalogId: 'cat-missing'} as any,
+        () => {},
+      );
+
+      assert.strictEqual(sub.value, undefined);
+      assert.ok(dispatchedError);
+      assert.strictEqual(dispatchedError.code, 'EXPRESSION_ERROR');
+      assert.match(dispatchedError.message, /Catalog not found: cat-missing/);
+      sub.unsubscribe();
     });
   });
 });

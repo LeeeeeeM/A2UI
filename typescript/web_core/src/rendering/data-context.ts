@@ -32,22 +32,23 @@ import {
   type Action,
   MAX_FUNCTION_CALL_ARGS,
 } from '../types/common-types.js';
-import {A2uiExpressionError} from '../errors.js';
+import {A2uiCatalogError, A2uiExpressionError} from '../errors.js';
 
 import {FunctionInvoker} from '../catalog/function_invoker.js';
 import {SurfaceModel} from '../state/surface-model.js';
 
-import {CatalogInterface} from '../catalog/types.js';
+import {Catalog, CatalogInterface} from '../catalog/types.js';
 
 const schemaKeysCache = new WeakMap<z.ZodTypeAny, Set<string> | null>();
 
 /**
- * Extracts declared property keys from a Zod schema if it represents an object schema
- * with a known, fixed set of keys (e.g. z.ZodObject, z.ZodEffects wrapping z.ZodObject, etc.)
- * that strips or rejects unknown keys.
+ * Extracts declared property keys from a Zod schema representing an object with fixed keys.
  *
- * Returns a Set of allowed key names, or null if the schema allows arbitrary keys (e.g. passthrough)
- * or if the keys cannot be statically determined.
+ * Traverses Zod wrappers (`ZodEffects`, `ZodOptional`, `ZodNullable`, `ZodDefault`,
+ * `ZodCatch`, `ZodIntersection`, `ZodUnion`) and returns the set of allowed key names.
+ *
+ * @param schema Zod schema to inspect.
+ * @returns Set of allowed property names, or `null` if arbitrary keys are permitted or undetermined.
  */
 export function getKnownSchemaKeys(schema: z.ZodTypeAny): Set<string> | null {
   if (schemaKeysCache.has(schema)) {
@@ -124,6 +125,11 @@ export function getKnownSchemaKeys(schema: z.ZodTypeAny): Set<string> | null {
  * Functions have a strict contract: supplying unknown or excessive arguments breaks that contract
  * and causes an A2uiExpressionError rather than silently stripping them. Validating arguments before
  * creating reactive nodes also prevents uncontrolled resource consumption.
+ *
+ * @param functionName Name of the function being validated.
+ * @param rawArgs Raw argument map to validate against the function schema.
+ * @param catalog Optional catalog providing the function's schema.
+ * @throws {A2uiExpressionError} If argument count exceeds `MAX_FUNCTION_CALL_ARGS`, unknown arguments are supplied, or arguments exceed expected count.
  */
 export function validateFunctionArgs(
   functionName: string,
@@ -199,7 +205,7 @@ export class DataContext {
     readonly path: string,
   ) {
     this.dataModel = surface.dataModel;
-    this.functionInvoker = surface.catalog.invoker;
+    this.functionInvoker = surface.defaultCatalog.invoker;
   }
 
   /**
@@ -268,8 +274,12 @@ export class DataContext {
     // 3. Function Call: { call: "...", args: ... }
     if ('call' in value) {
       const call = value as FunctionCall;
+      let targetCatalog: Catalog<any>;
       try {
-        validateFunctionArgs(call.call, call.args, this.surface?.catalog);
+        // Resolve before validating: the arguments must be checked against the
+        // catalog that will actually run the call, not the surface default.
+        targetCatalog = this.resolveFunctionCatalog(call.catalogId);
+        validateFunctionArgs(call.call, call.args, targetCatalog);
       } catch (e: unknown) {
         this.dispatchExpressionError(e, call.call);
         return undefined as V;
@@ -282,7 +292,13 @@ export class DataContext {
 
       const abortController = new AbortController();
 
-      const result = this.evaluateFunctionReactive<V>(call.call, args, abortController.signal);
+      const result = this.evaluateFunctionReactive<V>(
+        call.call,
+        args,
+        abortController.signal,
+        call.catalogId,
+        targetCatalog.invoker,
+      );
 
       if (result === undefined) {
         return undefined as unknown as V;
@@ -390,8 +406,12 @@ export class DataContext {
     // 3. Function Call
     if ('call' in value) {
       const call = value as FunctionCall;
+      let targetCatalog: Catalog<any>;
       try {
-        validateFunctionArgs(call.call, call.args, this.surface?.catalog);
+        // Resolve before validating: the arguments must be checked against the
+        // catalog that will actually run the call, not the surface default.
+        targetCatalog = this.resolveFunctionCatalog(call.catalogId);
+        validateFunctionArgs(call.call, call.args, targetCatalog);
       } catch (e: unknown) {
         this.dispatchExpressionError(e, call.call);
         return signal(undefined as unknown as V);
@@ -404,7 +424,13 @@ export class DataContext {
 
       if (Object.keys(argSignals).length === 0) {
         const abortController = new AbortController();
-        const result = this.evaluateFunctionReactive<V>(call.call, {}, abortController.signal);
+        const result = this.evaluateFunctionReactive<V>(
+          call.call,
+          {},
+          abortController.signal,
+          call.catalogId,
+          targetCatalog.invoker,
+        );
         const sig = isSignal(result) ? result : signal(result as V);
         sig.unsubscribe = () => abortController.abort();
         return sig;
@@ -434,7 +460,13 @@ export class DataContext {
           }
           abortController = new AbortController();
 
-          const res = this.evaluateFunctionReactive<V>(call.call, args, abortController.signal);
+          const res = this.evaluateFunctionReactive<V>(
+            call.call,
+            args,
+            abortController.signal,
+            call.catalogId,
+            targetCatalog.invoker,
+          );
 
           if (isSignal(res)) {
             innerUnsubscribe = effect(() => {
@@ -495,13 +527,56 @@ export class DataContext {
     return action;
   }
 
+  /**
+   * Resolves the catalog against which a function call executes.
+   *
+   * @param catalogId Identifier of the catalog named by the call, if specified.
+   * @returns The resolved Catalog instance, or the surface default catalog if omitted.
+   * @throws {A2uiCatalogError} If the call names a catalog ID that cannot be
+   *   resolved on this surface. This is reported as a catalog fault rather than
+   *   a missing function, since the function may exist in a catalog that is not
+   *   available here.
+   */
+  private resolveFunctionCatalog(catalogId?: string): Catalog<any> {
+    if (catalogId === undefined) {
+      return this.surface.defaultCatalog;
+    }
+    const target = this.surface.availableCatalogs?.get(catalogId);
+    if (!target) {
+      throw new A2uiCatalogError(`Catalog not found: ${catalogId}`);
+    }
+    return target;
+  }
+
+  /**
+   * Evaluates a catalog function and returns its reactive Signal or static value.
+   *
+   * Resolves the appropriate function invoker from the specified catalog or
+   * surface default, invokes the function with this context, and dispatches an
+   * expression error if execution throws.
+   *
+   * @template V Expected return type of the function evaluation.
+   * @param name Name of the function to evaluate.
+   * @param args Resolved arguments to pass to the function.
+   * @param abortSignal Optional abort signal to cancel asynchronous execution.
+   * @param catalogId Optional catalog ID override declaring the function.
+   * @param resolvedInvoker Optional pre-resolved function invoker to avoid redundant catalog lookup.
+   * @returns The evaluated result as a reactive `Signal` or static value, or `undefined` on failure.
+   */
   private evaluateFunctionReactive<V>(
     name: string,
     args: Record<string, unknown>,
     abortSignal?: AbortSignal,
+    catalogId?: string,
+    resolvedInvoker?: FunctionInvoker,
   ): Signal<V> | V {
+    const invoker =
+      resolvedInvoker ??
+      (catalogId === undefined
+        ? this.functionInvoker
+        : this.resolveFunctionCatalog(catalogId).invoker);
     try {
-      return this.functionInvoker(name, args, this, abortSignal);
+      return invoker(name, args, this, abortSignal);
     } catch (e: unknown) {
       this.dispatchExpressionError(e, name);
       return undefined as unknown as V;

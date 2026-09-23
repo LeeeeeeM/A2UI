@@ -87,38 +87,6 @@ class PayloadValidator(Generic[TComponent, TFunction]):
         self.catalog: Catalog[TComponent, TFunction] = catalog
         self.config = config
 
-    def validate(
-        self, payload: dict[str, Any] | list[dict[str, Any]]
-    ) -> list[A2uiErrorDetail]:
-        """Validates component dictionary or list of components against catalog schemas."""
-        errors: list[A2uiErrorDetail] = []
-        components: list[dict[str, Any]] = []
-
-        def _extract(item: Any) -> None:
-            if isinstance(item, dict):
-                if "updateComponents" in item and isinstance(
-                    item["updateComponents"], dict
-                ):
-                    comps = item["updateComponents"].get("components", [])
-                    if isinstance(comps, list):
-                        components.extend(c for c in comps if isinstance(c, dict))
-                elif "components" in item and isinstance(item["components"], list):
-                    components.extend(
-                        c for c in item["components"] if isinstance(c, dict)
-                    )
-                elif "component" in item or "type" in item:
-                    components.append(item)
-
-        if isinstance(payload, list):
-            for elem in payload:
-                _extract(elem)
-        else:
-            _extract(payload)
-
-        for comp in components:
-            errors.extend(self.validate_component(comp))
-        return errors
-
     def validate_component(
         self,
         comp: dict[str, Any],
@@ -323,10 +291,19 @@ class PayloadValidator(Generic[TComponent, TFunction]):
         path: str,
         errors: list[A2uiErrorDetail],
     ) -> None:
-        """Recursively validates nested function calls within component properties."""
+        """Recursively validates nested function calls declared by this catalog.
+
+        A call that names a different `catalogId` is skipped here: this validator
+        is scoped to a single catalog, and the call is checked at resolution time
+        against the catalog that actually runs it.
+        """
         if isinstance(val, dict):
             fn_name = val.get("call") or val.get("function")
-            if fn_name and isinstance(fn_name, str):
+            cat_id = val.get("catalogId")
+            targets_this_catalog = not cat_id or cat_id == getattr(
+                self.catalog, "catalog_id", None
+            )
+            if fn_name and isinstance(fn_name, str) and targets_this_catalog:
                 fn_args = val.get("args")
                 args_dict = fn_args if isinstance(fn_args, dict) else {}
                 try:

@@ -238,7 +238,7 @@ describe('reference-map schema introspection', () => {
         slot: z.string().describe('ComponentId'),
       }),
     };
-    const catalog = new Catalog('drawer-cat', [drawerApi]);
+    const catalog = new Catalog('drawer-cat', '1.0', [drawerApi]);
     const refMap1 = catalog.componentRefMap;
     const refMap2 = catalog.componentRefMap;
     assert.strictEqual(refMap1, refMap2);
@@ -253,7 +253,7 @@ describe('reference-map schema introspection', () => {
         slot: z.string().describe('ComponentId'),
       }),
     };
-    const catalogWithoutOptions = new Catalog('drawer-cat', [drawerApi]);
+    const catalogWithoutOptions = new Catalog('drawer-cat', '1.0', [drawerApi]);
     const refMap = catalogWithoutOptions.componentRefMap;
     assert.ok(refMap.Drawer);
     assert.deepStrictEqual(Array.from(refMap.Drawer.singleRefs), ['slot']);
@@ -278,7 +278,7 @@ describe('reference-map schema introspection', () => {
       schema: treeNodeSchema,
     };
 
-    const catalog = new Catalog('tree-cat', [treeApi]);
+    const catalog = new Catalog('tree-cat', '1.0', [treeApi]);
     const refMap = catalog.componentRefMap;
     assert.ok(refMap.TreeNode);
     assert.deepStrictEqual(Array.from(refMap.TreeNode.singleRefs), ['childSlot']);
@@ -294,10 +294,39 @@ describe('reference-map schema introspection', () => {
       }),
     };
 
-    const catalog = new Catalog('counter-cat', [customApi]);
+    const catalog = new Catalog('counter-cat', '1.0', [customApi]);
     const refMap = catalog.componentRefMap;
     assert.ok(refMap.CardCounter);
     assert.deepStrictEqual(Array.from(refMap.CardCounter.singleRefs), ['mainSlot']);
     assert.strictEqual(refMap.CardCounter.listRefs.size, 0);
+  });
+
+  it('extracts nested child references and child lists from raw JSON schemas with array items', () => {
+    const rawComponent = {
+      name: 'SectionList',
+      schema: {
+        type: 'object',
+        properties: {
+          sections: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                title: {type: 'string'},
+                headerChild: {$ref: '#/$defs/ComponentId'},
+                childItems: {$ref: '#/$defs/ChildList'},
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const catalog = new Catalog('section-cat', '1.0', [rawComponent as any]);
+    const refMap = catalog.componentRefMap;
+    assert.ok(refMap.SectionList);
+    assert.ok(refMap.SectionList.listRefs.has('sections'));
+    assert.ok(refMap.SectionList.nestedRefs?.sections.has('headerChild'));
+    assert.strictEqual(refMap.SectionList.nestedRefs?.sections.has('title'), false);
   });
 });
