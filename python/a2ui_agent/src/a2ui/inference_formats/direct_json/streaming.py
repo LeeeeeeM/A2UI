@@ -623,7 +623,7 @@ class DirectJsonStreamParser:
                             obj_buffer = self._json_buffer[start_idx:]
                             if obj_buffer.startswith("{") and obj_buffer.endswith("}"):
                                 try:
-                                    obj = json.loads(obj_buffer)
+                                    obj = json.loads(obj_buffer, strict=False)
                                     if isinstance(obj, dict):
                                         self._found_valid_json_in_block = True
                                         logger.debug(
@@ -736,7 +736,7 @@ class DirectJsonStreamParser:
             fixed_fragment = self._fix_json(raw_fragment)
             obj = None
             try:
-                obj = json.loads(fixed_fragment)
+                obj = json.loads(fixed_fragment, strict=False)
             except json.JSONDecodeError:
                 # Fallback: iteratively strip from the last comma
                 # This handles cases where _fix_json produces invalid JSON
@@ -747,7 +747,7 @@ class DirectJsonStreamParser:
                     try:
                         fixed_trimmed = self._fix_json(trimmed)
                         if fixed_trimmed:
-                            obj = json.loads(fixed_trimmed)
+                            obj = json.loads(fixed_trimmed, strict=False)
                             break
                     except json.JSONDecodeError:
                         continue
@@ -1100,12 +1100,14 @@ class DirectJsonStreamParser:
                 for cid in available_reachable:
                     comp_m = comp_models.get(cid)
                     if comp_m:
-                        errs = comp_m.validate(config=STRICT_VALIDATION)
-                        if errs:
-                            all_errors.extend(errs)
+                        try:
+                            comp_m.validate(config=STRICT_VALIDATION)
+                        except A2uiValidationError as e:
+                            all_errors.extend(e.details)
                 if all_errors:
                     raise A2uiValidationError(
-                        f"Validation failed: {[e.message for e in all_errors]}",
+                        "Validation failed:"
+                        f" {[detail.message for detail in all_errors]}",
                         details=all_errors,
                     )
 
