@@ -135,7 +135,7 @@ def test_message_processor_mismatched_catalog_versions_on_component_add():
     assert "different protocol version" in str(exc_info.value)
 
 
-def test_component_update_resets_catalog_to_default_when_omitted():
+def test_component_update_preserves_catalog_when_omitted():
     cat_default = Catalog(
         catalog_id="cat_default", protocol_version="v1.0", components=[]
     )
@@ -178,7 +178,7 @@ def test_component_update_resets_catalog_to_default_when_omitted():
 
     comp_updated = surface.components_model.get("btn")
     assert comp_updated is not None
-    assert comp_updated.catalog == cat_default
+    assert comp_updated.catalog == cat_custom
 
     # 2. Delete surface
     delete_msg = {
@@ -1346,3 +1346,227 @@ async def test_message_processor_process_operation_async():
     assert res2 is not None
     assert res2["rendererFunctionResponse"]["functionCallId"] == "call_async_1"
     assert res2["rendererFunctionResponse"]["value"] == "res"
+
+
+def test_message_processor_component_catalog_change_recreates():
+    from a2ui.core.catalog import Catalog, ComponentApi
+
+    cat_a = Catalog(
+        catalog_id="cat_a",
+        protocol_version="v1.0",
+        components=[ComponentApi(name="Box", schema={"type": "object"})],
+    )
+    cat_b = Catalog(
+        catalog_id="cat_b",
+        protocol_version="v1.0",
+        components=[ComponentApi(name="Box", schema={"type": "object"})],
+    )
+    processor = MessageProcessor(catalogs=[cat_a, cat_b])
+    processor.process_messages([{
+        "version": "v1.0",
+        "createSurface": {
+            "surfaceId": "s1",
+            "catalogId": "cat_a",
+            "components": [{"id": "c1", "component": "Box", "catalogId": "cat_a"}],
+        },
+    }])
+    surface = processor.model.get_surface("s1")
+    assert surface is not None
+    original_comp = surface.components_model.get("c1")
+    assert original_comp is not None
+    assert original_comp.catalog is cat_a
+
+    events: list[str] = []
+    surface.components_model.on_deleted.subscribe(
+        lambda cid: events.append(f"del_{cid}")
+    )
+    surface.components_model.on_created.subscribe(
+        lambda c: events.append(f"create_{c.id}")
+    )
+
+    # Update component with different catalogId
+    processor.process_messages([{
+        "version": "v1.0",
+        "updateComponents": {
+            "surfaceId": "s1",
+            "components": [{"id": "c1", "component": "Box", "catalogId": "cat_b"}],
+        },
+    }])
+    updated_comp = surface.components_model.get("c1")
+    assert updated_comp is not None
+    assert updated_comp.catalog is cat_b
+    assert updated_comp is not original_comp
+    assert events == ["del_c1", "create_c1"]
+
+
+def test_create_surface_data_model_before_components_avoids_warning():
+    import warnings
+    from a2ui.core.basic_catalog.v1_0 import BasicCatalog as BasicCatalogV10
+    from a2ui.core.resolution import MissingDataBindingWarning
+
+    processor = MessageProcessor(catalogs=[BasicCatalogV10()])
+    with warnings.catch_warnings(record=True) as recorded_warnings:
+        warnings.simplefilter("always")
+        processor.process_messages([{
+            "version": "v1.0",
+            "createSurface": {
+                "surfaceId": "s_ordered",
+                "dataModel": {"userName": "Alice"},
+                "components": [{
+                    "id": "root",
+                    "component": "Text",
+                    "text": {"path": "/userName"},
+                }],
+            },
+        }])
+
+    missing_warnings = [
+        w
+        for w in recorded_warnings
+        if issubclass(w.category, MissingDataBindingWarning)
+    ]
+    assert len(missing_warnings) == 0
+
+    surface = processor.model.get_surface("s_ordered")
+    assert surface is not None
+    assert surface.data_model.get("/userName") == "Alice"
+
+
+def test_update_data_model_root_replaces_entire_data_model():
+    from a2ui.core.basic_catalog.v1_0 import BasicCatalog as BasicCatalogV10
+
+    processor = MessageProcessor(catalogs=[BasicCatalogV10()])
+    processor.process_messages([{
+        "version": "v1.0",
+        "createSurface": {
+            "surfaceId": "s_replace",
+            "dataModel": {"initialKey": "value1", "sharedKey": "old"},
+        },
+    }])
+    surface = processor.model.get_surface("s_replace")
+    assert surface is not None
+
+    processor.process_messages([{
+        "version": "v1.0",
+        "updateDataModel": {
+            "surfaceId": "s_replace",
+            "path": "/",
+            "value": {"newKey": "value2", "sharedKey": "new"},
+        },
+    }])
+
+    assert surface.data_model.get("/initialKey") is None
+    assert surface.data_model.get("/newKey") == "value2"
+    assert surface.data_model.get("/sharedKey") == "new"
+    assert surface.data_model.get("/") == {"newKey": "value2", "sharedKey": "new"}
+
+
+def test_update_data_model_omitted_path_replaces_entire_data_model():
+    from a2ui.core.basic_catalog.v1_0 import BasicCatalog as BasicCatalogV10
+
+    processor = MessageProcessor(catalogs=[BasicCatalogV10()])
+    processor.process_messages([{
+        "version": "v1.0",
+        "createSurface": {
+            "surfaceId": "s_omitted",
+            "dataModel": {"oldProp": "oldVal"},
+        },
+    }])
+    surface = processor.model.get_surface("s_omitted")
+    assert surface is not None
+
+    processor.process_messages([{
+        "version": "v1.0",
+        "updateDataModel": {
+            "surfaceId": "s_omitted",
+            "value": {"newProp": "newVal"},
+        },
+    }])
+
+    assert surface.data_model.get("/oldProp") is None
+    assert surface.data_model.get("/newProp") == "newVal"
+    assert surface.data_model.get("/") == {"newProp": "newVal"}
+
+
+def test_v1_0_adapter_drops_theme_from_create_surface():
+    from a2ui.core.processing.adapters.v1_0 import V1Point0Adapter
+    from a2ui.core.processing.operations import InternalCreateSurfaceOp
+
+    adapter = V1Point0Adapter()
+    ops = adapter.extract_operations({
+        "version": "v1.0",
+        "createSurface": {
+            "surfaceId": "s_v1",
+            "catalogId": "basic",
+        },
+    })
+    create_op = next(
+        (op for op in ops if isinstance(op, InternalCreateSurfaceOp)), None
+    )
+    assert create_op is not None
+    assert create_op.theme is None
+
+    # Even if raw message dict has theme, v1.0 adapter ignores it
+    raw_ops = adapter._extract_operations_for_action(
+        "createSurface",
+        {
+            "createSurface": {
+                "surfaceId": "s_v1",
+                "catalogId": "basic",
+                "theme": {"primaryColor": "#ff0000"},
+            }
+        },
+    )
+    assert raw_ops[0].theme is None
+
+
+def test_message_processor_component_partial_update_preserves_catalog_when_omitted():
+    from a2ui.core.catalog import Catalog, ComponentApi
+
+    cat_a = Catalog(
+        catalog_id="cat_a",
+        protocol_version="v1.0",
+        components=[ComponentApi(name="Box", schema={"type": "object"})],
+    )
+    cat_b = Catalog(
+        catalog_id="cat_b",
+        protocol_version="v1.0",
+        components=[ComponentApi(name="Box", schema={"type": "object"})],
+    )
+    processor = MessageProcessor(catalogs=[cat_a, cat_b])
+    processor.process_messages([{
+        "version": "v1.0",
+        "createSurface": {
+            "surfaceId": "s1",
+            "catalogId": "cat_a",
+            "components": [{"id": "c1", "component": "Box", "catalogId": "cat_b"}],
+        },
+    }])
+    surface = processor.model.get_surface("s1")
+    assert surface is not None
+    original_comp = surface.components_model.get("c1")
+    assert original_comp is not None
+    assert original_comp.catalog is cat_b
+
+    events: list[str] = []
+    surface.components_model.on_deleted.subscribe(
+        lambda cid: events.append(f"del_{cid}")
+    )
+    surface.components_model.on_created.subscribe(
+        lambda c: events.append(f"create_{c.id}")
+    )
+
+    # Partial update without catalogId should preserve existing catalog and NOT recreate component
+    processor.process_messages([{
+        "version": "v1.0",
+        "updateComponents": {
+            "surfaceId": "s1",
+            "components": [{"id": "c1", "title": "Updated Title"}],
+        },
+    }])
+    updated_comp = surface.components_model.get("c1")
+    assert updated_comp is not None
+    assert updated_comp.catalog is cat_b
+    assert updated_comp is original_comp
+    assert updated_comp.properties.get("title") == "Updated Title"
+    assert events == []

@@ -167,6 +167,37 @@ def test_surface_model_action_and_error_dispatch():
     assert actions[0]["name"] == "click"
     assert actions[0]["surfaceId"] == "main"
     assert actions[0]["sourceComponentId"] == "btn1"
+    assert "catalogId" not in actions[0]
+
+    # Action with catalogId at root
+    surface.dispatch_action({"name": "submit", "catalogId": "custom_cat"}, "btn2")
+    assert len(actions) == 2
+    assert actions[1]["name"] == "submit"
+    assert actions[1]["catalogId"] == "custom_cat"
+
+    # Action with catalogId inside event
+    surface.dispatch_action(
+        {"event": {"name": "save", "catalogId": "another_cat"}}, "btn3"
+    )
+    assert len(actions) == 3
+    assert actions[2]["name"] == "save"
+    assert actions[2]["catalogId"] == "another_cat"
+
+    # Action with non-dict event payload or missing name does not emit
+    surface.dispatch_action({"event": "custom_string_event"}, "btn4")
+    assert len(actions) == 3
+
+    surface.dispatch_action({"name": ""}, "btn5")
+    assert len(actions) == 3
+
+    surface.dispatch_action("not_a_dict", "btn6")  # type: ignore[arg-type]
+    assert len(actions) == 3
+
+    # Context explicitly None normalizes to empty dict
+    surface.dispatch_action({"name": "reset", "context": None}, "btn7")
+    assert len(actions) == 4
+    assert actions[3]["name"] == "reset"
+    assert actions[3]["context"] == {}
 
     surface.dispatch_error({"code": "ERR_1", "message": "Failed"})
     assert len(errors) == 1

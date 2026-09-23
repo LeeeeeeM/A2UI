@@ -384,17 +384,17 @@ class MessageProcessor:
             new_surface.root_id = op.root
         self.model.add_surface(new_surface)
 
-        if op.components is not None:
-            self._process_update_components_op(
-                InternalUpdateComponentsOp(
-                    surface_id=surface_id, components=op.components
-                )
-            )
-
         if op.data_model is not None:
             self._process_update_data_model_op(
                 InternalUpdateDataModelOp(
                     surface_id=surface_id, path="/", value=op.data_model
+                )
+            )
+
+        if op.components is not None:
+            self._process_update_components_op(
+                InternalUpdateComponentsOp(
+                    surface_id=surface_id, components=op.components
                 )
             )
 
@@ -453,6 +453,8 @@ class MessageProcessor:
                         f" protocol version {comp_ver} than default catalog"
                         f" {surface_ver}."
                     )
+            elif existing and (not comp_type_raw or comp_type_raw == existing.type):
+                comp_catalog = existing.catalog
             else:
                 comp_catalog = surface.default_catalog
 
@@ -474,11 +476,13 @@ class MessageProcessor:
         for new_comp in new_component_models:
             existing = surface.components_model.get(new_comp.id)
             if existing:
-                if existing.type != new_comp.type:
+                if (
+                    existing.type != new_comp.type
+                    or existing.catalog is not new_comp.catalog
+                ):
                     surface.components_model.remove_component(new_comp.id)
                     surface.components_model.add_component(new_comp)
                 else:
-                    existing.catalog = new_comp.catalog
                     existing.properties = new_comp.properties
             else:
                 surface.components_model.add_component(new_comp)
@@ -494,5 +498,4 @@ class MessageProcessor:
 
         path = op.path or "/"
         value = op.value
-
         surface.data_model.set(path, value)

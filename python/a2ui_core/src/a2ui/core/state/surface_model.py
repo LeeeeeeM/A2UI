@@ -56,17 +56,30 @@ class SurfaceModel(Generic[TComponent, TFunction]):
         self, payload: dict[str, Any], source_component_id: str
     ) -> None:
         """Triggers action emission from component interactives."""
+        if not isinstance(payload, dict):
+            return
         import datetime
 
         event_payload = payload
-        if isinstance(payload, dict):
-            if "event" in payload:
-                event_payload = payload["event"]
-            elif "functionCall" in payload:
-                event_payload = payload["functionCall"]
+        catalog_id: str | None = payload.get("catalogId")
+        if "event" in payload:
+            event_payload = payload["event"]
+        elif "functionCall" in payload:
+            event_payload = payload["functionCall"]
 
-        action_event = {
-            "name": event_payload.get("name", event_payload.get("call", "")),
+        event_dict = event_payload if isinstance(event_payload, dict) else {}
+        name = event_dict.get("name", event_dict.get("call", ""))
+        if not name or not isinstance(name, str):
+            return
+
+        if not catalog_id:
+            catalog_id = event_dict.get("catalogId")
+
+        raw_context = event_dict.get("context", event_dict.get("args", {}))
+        context = raw_context if isinstance(raw_context, dict) else {}
+
+        action_event: dict[str, Any] = {
+            "name": name,
             "surfaceId": self.id,
             "sourceComponentId": source_component_id,
             "timestamp": (
@@ -74,8 +87,11 @@ class SurfaceModel(Generic[TComponent, TFunction]):
                 .isoformat()
                 .replace("+00:00", "Z")
             ),
-            "context": event_payload.get("context", event_payload.get("args", {})),
+            "context": context,
         }
+        if catalog_id and isinstance(catalog_id, str):
+            action_event["catalogId"] = catalog_id
+
         self.on_action.emit(action_event)
 
     def dispatch_error(self, error: dict[str, Any]) -> None:
