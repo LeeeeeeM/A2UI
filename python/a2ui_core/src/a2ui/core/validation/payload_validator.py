@@ -19,6 +19,7 @@ from typing import (
     cast,
 )
 
+import copy
 from pydantic import BaseModel, ConfigDict, ValidationError
 from jsonschema import Draft202012Validator
 import jsonschema.exceptions
@@ -26,10 +27,8 @@ import referencing.exceptions
 from ..exceptions import A2uiValidationError, A2uiErrorDetail, A2uiCatalogError
 from ..catalog.catalog import Catalog, TComponent, TFunction
 from ..processing.format_pydantic_error import format_validation_error
-
-
-class A2uiValidatorError(A2uiValidationError):
-    """Exception raised when an A2UI Catalog payload validation fails."""
+from ..schema import ProtocolVersion
+from ..common.semver import is_at_least_version
 
 
 class ValidationConfig(BaseModel):
@@ -112,23 +111,25 @@ class PayloadValidator(Generic[TComponent, TFunction]):
             raise A2uiValidationError("Component must be an object", details=errors)
 
         comp_id = comp.get("id")
-        comp_type = comp.get("component") or comp.get("type")
+        comp_type = comp.get("component")
 
         if comp_id and isinstance(comp_id, str):
             from ..catalog.catalog import is_valid_uax31_identifier
-            from ..common.semver import is_at_least_version
 
             ver = getattr(self.catalog, "protocol_version", None)
             if (
                 ver
-                and is_at_least_version(ver, "1.0")
+                and is_at_least_version(ver, ProtocolVersion.V1_0)
                 and not is_valid_uax31_identifier(comp_id)
             ):
                 errors.append(
                     A2uiErrorDetail(
                         path=f"components.{comp_id}.id",
                         code="invalid_identifier",
-                        message=f"Component id '{comp_id}' must be a valid identifier",
+                        message=(
+                            f"Component id '{comp_id}' must be a valid UAX #31"
+                            " identifier"
+                        ),
                     )
                 )
 
@@ -293,8 +294,6 @@ class PayloadValidator(Generic[TComponent, TFunction]):
                     message=str(ref_err),
                 )
             )
-        except Exception:
-            pass
 
     def _validate_nested_functions(
         self,
@@ -315,24 +314,40 @@ class PayloadValidator(Generic[TComponent, TFunction]):
             targets_this_catalog = not cat_id or cat_id == getattr(
                 self.catalog, "catalog_id", None
             )
-            if fn_name and isinstance(fn_name, str) and targets_this_catalog:
+            if fn_name and isinstance(fn_name, str):
                 fn_args = val.get("args")
-                args_dict = fn_args if isinstance(fn_args, dict) else {}
-                try:
-                    self.validate_function(fn_name, args_dict)
-                except A2uiValidationError as e:
-                    if e.details:
-                        errors.extend(e.details)
-                    else:
-                        errors.append(
-                            A2uiErrorDetail(
-                                path=f"components.{comp_id}.{path}"
-                                if path
-                                else f"components.{comp_id}",
-                                code="invalid_function_call",
-                                message=str(e),
+                if targets_this_catalog:
+                    try:
+                        self.validate_function(fn_name, fn_args)
+                    except A2uiValidationError as e:
+                        if e.details:
+                            errors.extend(e.details)
+                        else:
+                            errors.append(
+                                A2uiErrorDetail(
+                                    path=f"components.{comp_id}.{path}"
+                                    if path
+                                    else f"components.{comp_id}",
+                                    code="invalid_function_call",
+                                    message=str(e),
+                                )
                             )
-                        )
+                else:
+                    try:
+                        self._validate_function_identifiers(fn_name, fn_args)
+                    except A2uiValidationError as e:
+                        if e.details:
+                            errors.extend(e.details)
+                        else:
+                            errors.append(
+                                A2uiErrorDetail(
+                                    path=f"components.{comp_id}.{path}"
+                                    if path
+                                    else f"components.{comp_id}",
+                                    code="invalid_identifier",
+                                    message=str(e),
+                                )
+                            )
             for k, v in val.items():
                 if k not in ("id", "component"):
                     child_path = f"{path}.{k}" if path else k
@@ -342,51 +357,76 @@ class PayloadValidator(Generic[TComponent, TFunction]):
                 child_path = f"{path}.{idx}"
                 self._validate_nested_functions(comp_id, item, child_path, errors)
 
+    def _validate_function_identifiers(self, name: str, args: Any) -> None:
+        """Validates function name and argument identifiers against UAX #31 for v1.0+."""
+        from ..catalog.catalog import is_valid_uax31_identifier
+
+        ver = getattr(self.catalog, "protocol_version", None)
+        if not (ver and is_at_least_version(ver, ProtocolVersion.V1_0)):
+            return
+
+        if not is_valid_uax31_identifier(name):
+            raise A2uiValidationError(
+                f"Function name '{name}' must be a valid UAX #31 identifier",
+                details=[
+                    A2uiErrorDetail(
+                        path=f"functions.{name}",
+                        code="invalid_identifier",
+                        message=(
+                            f"Function name '{name}' must be a valid UAX #31 identifier"
+                        ),
+                    )
+                ],
+            )
+        if isinstance(args, dict):
+            for arg_name in args:
+                if not isinstance(arg_name, str) or not is_valid_uax31_identifier(
+                    arg_name
+                ):
+                    raise A2uiValidationError(
+                        f"Function argument '{arg_name}' in function '{name}' must"
+                        " be a valid UAX #31 identifier",
+                        details=[
+                            A2uiErrorDetail(
+                                path=f"functions.{name}.{arg_name}",
+                                code="invalid_identifier",
+                                message=(
+                                    f"Function argument '{arg_name}' in function"
+                                    f" '{name}' must be a valid UAX #31 identifier"
+                                ),
+                            )
+                        ],
+                    )
+
     def validate_function(
         self,
         name: str,
-        args: dict[str, Any],
-    ) -> None:
+        args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Validates function call parameters against catalog function schema definitions."""
         active_config = self.config
         allow_unknown = active_config.allow_unknown_elements if active_config else False
 
-        from ..catalog.catalog import is_valid_uax31_identifier
-        from ..common.semver import is_at_least_version
+        if args is None:
+            norm_args: dict[str, Any] = {}
+        elif isinstance(args, dict):
+            norm_args = dict(args)
+        else:
+            raise A2uiValidationError(
+                f"Function arguments for '{name}' must be an object/dictionary",
+                details=[
+                    A2uiErrorDetail(
+                        path=f"functions.{name}",
+                        code="type_mismatch",
+                        message=(
+                            f"Function arguments for '{name}' must be an"
+                            " object/dictionary"
+                        ),
+                    )
+                ],
+            )
 
-        ver = getattr(self.catalog, "protocol_version", None)
-        if ver and is_at_least_version(ver, "1.0"):
-            if not is_valid_uax31_identifier(name):
-                raise A2uiValidationError(
-                    f"Function name '{name}' must be a valid UAX #31 identifier",
-                    details=[
-                        A2uiErrorDetail(
-                            path=f"functions.{name}",
-                            code="invalid_identifier",
-                            message=(
-                                f"Function name '{name}' must be a valid UAX #31"
-                                " identifier"
-                            ),
-                        )
-                    ],
-                )
-            if isinstance(args, dict):
-                for arg_name in args:
-                    if not is_valid_uax31_identifier(arg_name):
-                        raise A2uiValidationError(
-                            f"Function argument '{arg_name}' in function '{name}' must"
-                            " be a valid UAX #31 identifier",
-                            details=[
-                                A2uiErrorDetail(
-                                    path=f"functions.{name}.{arg_name}",
-                                    code="invalid_identifier",
-                                    message=(
-                                        f"Function argument '{arg_name}' in function"
-                                        f" '{name}' must be a valid UAX #31 identifier"
-                                    ),
-                                )
-                            ],
-                        )
+        self._validate_function_identifiers(name, norm_args)
 
         fn_def, fn_schema, base_schema = self._find_function_definition(name)
 
@@ -402,7 +442,7 @@ class PayloadValidator(Generic[TComponent, TFunction]):
                         )
                     ],
                 )
-            return
+            return dict(norm_args)
 
         model_cls = (
             getattr(fn_def, "schema", None)
@@ -412,11 +452,12 @@ class PayloadValidator(Generic[TComponent, TFunction]):
             else None
         )
         if isinstance(model_cls, type) and issubclass(model_cls, BaseModel):
-            self._validate_model_function(model_cls, name, args)
+            return self._validate_model_function(model_cls, name, norm_args)
         elif isinstance(fn_schema, dict):
-            self._validate_dict_function(
-                fn_schema, base_schema, name, args, allow_unknown
+            return self._validate_dict_function(
+                fn_schema, base_schema, name, norm_args, allow_unknown
             )
+        return dict(norm_args)
 
     def _find_function_definition(
         self,
@@ -441,10 +482,12 @@ class PayloadValidator(Generic[TComponent, TFunction]):
                 fn_schema = funcs_schema[name]
                 base_schema = cat_schema
         if fn_def is None and name.startswith("@"):
-            from ..common.semver import is_at_least_version
-
             ver = getattr(self.catalog, "protocol_version", None)
-            if name == "@index" and ver and is_at_least_version(ver, "1.0"):
+            if (
+                name == "@index"
+                and ver
+                and is_at_least_version(ver, ProtocolVersion.V1_0)
+            ):
                 from ..basic_catalog.v1_0.function_impls import IndexImplementation
 
                 fn_def = IndexImplementation
@@ -455,10 +498,11 @@ class PayloadValidator(Generic[TComponent, TFunction]):
         model_cls: Type[BaseModel],
         name: str,
         args: dict[str, Any],
-    ) -> None:
+    ) -> dict[str, Any]:
         """Validates function arguments against a Pydantic BaseModel schema."""
         try:
-            model_cls.model_validate(args or {})
+            validated = model_cls.model_validate(args or {})
+            return validated.model_dump(by_alias=True)
         except ValidationError as e:
             fn_errors = []
             for err in e.errors():
@@ -482,9 +526,81 @@ class PayloadValidator(Generic[TComponent, TFunction]):
                         message=err.get("msg", "Validation failed"),
                     )
                 )
-            if fn_errors:
-                summary = "\n".join(f"{e.path}: {e.message}" for e in fn_errors)
-                raise A2uiValidationError(summary, details=fn_errors)
+            summary = "\n".join(f"{e.path}: {e.message}" for e in fn_errors)
+            raise A2uiValidationError(summary, details=fn_errors)
+
+    def _extract_schema_defs(
+        self,
+        fn_schema: dict[str, Any],
+        base_schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Combines $defs from base catalog schema and function schema."""
+        base_defs = (
+            base_schema.get("$defs", {}) if isinstance(base_schema, dict) else {}
+        )
+        fn_defs = fn_schema.get("$defs", {}) if isinstance(fn_schema, dict) else {}
+        return {**base_defs, **fn_defs}
+
+    def _extract_raw_param_schema(
+        self,
+        fn_schema: dict[str, Any],
+        defs: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Derives the parameter sub-schema from standard or legacy function definitions."""
+        if "parameters" in fn_schema and isinstance(fn_schema["parameters"], dict):
+            schema: dict[str, Any] = {
+                "$schema": JSON_SCHEMA_DRAFT_2020_12,
+                "$defs": defs,
+                "type": "object",
+                "properties": fn_schema["parameters"],
+            }
+            if "required" in fn_schema and isinstance(fn_schema["required"], list):
+                schema["required"] = fn_schema["required"]
+            if "additionalProperties" in fn_schema:
+                schema["additionalProperties"] = fn_schema["additionalProperties"]
+            return schema
+
+        props = fn_schema.get("properties")
+        if isinstance(props, dict):
+            if "args" in props and isinstance(props["args"], dict):
+                return {
+                    "$schema": JSON_SCHEMA_DRAFT_2020_12,
+                    "$defs": defs,
+                    **props["args"],
+                }
+            return {
+                "$schema": JSON_SCHEMA_DRAFT_2020_12,
+                "$defs": defs,
+                "type": "object",
+                **fn_schema,
+            }
+
+        return None
+
+    def _attach_catalog_context(
+        self,
+        param_schema: dict[str, Any] | None,
+        base_schema: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Injects root catalog functions and components for self-referential schemas."""
+        if not param_schema or not isinstance(base_schema, dict):
+            return param_schema
+
+        for key in ("functions", "components"):
+            if key in base_schema and key not in param_schema:
+                param_schema[key] = base_schema[key]
+
+        return param_schema
+
+    def _build_param_schema(
+        self,
+        fn_schema: dict[str, Any],
+        base_schema: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Constructs a JSON Schema object for function parameter validation."""
+        defs = self._extract_schema_defs(fn_schema, base_schema)
+        raw_schema = self._extract_raw_param_schema(fn_schema, defs)
+        return self._attach_catalog_context(raw_schema, base_schema)
 
     def _validate_dict_function(
         self,
@@ -493,87 +609,58 @@ class PayloadValidator(Generic[TComponent, TFunction]):
         name: str,
         args: dict[str, Any],
         allow_unknown: bool,
-    ) -> None:
+    ) -> dict[str, Any]:
         """Validates function arguments against a JSON Schema dict definition."""
-        param_schema = None
-        defs = base_schema.get("$defs", {}) if isinstance(base_schema, dict) else {}
-        base_defs = (
-            base_schema.get("$defs", {}) if isinstance(base_schema, dict) else {}
-        )
-        fn_defs = fn_schema.get("$defs", {}) if isinstance(fn_schema, dict) else {}
-        defs = {**base_defs, **fn_defs}
-        if "parameters" in fn_schema and isinstance(fn_schema["parameters"], dict):
-            param_schema = {
-                "$schema": JSON_SCHEMA_DRAFT_2020_12,
-                "$defs": defs,
-                "type": "object",
-                "properties": fn_schema["parameters"],
-            }
-            if "required" in fn_schema and isinstance(fn_schema["required"], list):
-                param_schema["required"] = fn_schema["required"]
-            if "additionalProperties" in fn_schema:
-                param_schema["additionalProperties"] = fn_schema["additionalProperties"]
-        elif (
-            "properties" in fn_schema
-            and isinstance(fn_schema["properties"], dict)
-            and "args" in fn_schema["properties"]
-            and isinstance(fn_schema["properties"]["args"], dict)
-        ):
-            param_schema = {
-                "$schema": JSON_SCHEMA_DRAFT_2020_12,
-                "$defs": defs,
-                **fn_schema["properties"]["args"],
-            }
-        elif "properties" in fn_schema and isinstance(fn_schema["properties"], dict):
-            param_schema = {
-                "$schema": JSON_SCHEMA_DRAFT_2020_12,
-                "$defs": defs,
-                "type": "object",
-                **fn_schema,
-            }
+        param_schema = self._build_param_schema(fn_schema, base_schema)
+        validated_args = dict(args or {})
+        if not param_schema:
+            return validated_args
 
-        if param_schema:
-            if isinstance(base_schema, dict):
-                if "functions" in base_schema and "functions" not in param_schema:
-                    param_schema["functions"] = base_schema["functions"]
-                if "components" in base_schema and "components" not in param_schema:
-                    param_schema["components"] = base_schema["components"]
-            try:
-                fn_validator = Draft202012Validator(param_schema)
-                schema_errors = sorted(
-                    fn_validator.iter_errors(args or {}), key=lambda e: e.path
-                )
-                errors = []
-                for err in schema_errors:
-                    err_code = self._map_json_schema_error_code(err.validator)
-                    if allow_unknown and err_code == "extra_field":
-                        continue
-                    path_str = ".".join(str(p) for p in err.path)
-                    errors.append(
-                        A2uiErrorDetail(
-                            path=f"functions.{name}.{path_str}"
-                            if path_str
-                            else f"functions.{name}",
-                            code=err_code,
-                            message=err.message,
-                        )
+        try:
+            fn_validator = Draft202012Validator(param_schema)
+            schema_errors = sorted(
+                fn_validator.iter_errors(args or {}), key=lambda e: e.path
+            )
+            errors = []
+            for err in schema_errors:
+                err_code = self._map_json_schema_error_code(err.validator)
+                if allow_unknown and err_code == "extra_field":
+                    continue
+                path_str = ".".join(str(p) for p in err.path)
+                errors.append(
+                    A2uiErrorDetail(
+                        path=f"functions.{name}.{path_str}"
+                        if path_str
+                        else f"functions.{name}",
+                        code=err_code,
+                        message=err.message,
                     )
-                if errors:
-                    summary = "\n".join(
-                        f"{detail.path}: {detail.message}" for detail in errors
-                    )
-                    raise A2uiValidationError(summary, details=errors)
-            except A2uiValidationError:
-                raise
-            except referencing.exceptions.Unresolvable as ref_err:
-                detail = A2uiErrorDetail(
-                    path=f"functions.{name}",
-                    code="invalid_reference",
-                    message=str(ref_err),
                 )
-                raise A2uiValidationError(str(ref_err), details=[detail]) from ref_err
-            except Exception:
-                pass
+            if errors:
+                summary = "\n".join(
+                    f"{detail.path}: {detail.message}" for detail in errors
+                )
+                raise A2uiValidationError(summary, details=errors)
+        except A2uiValidationError:
+            raise
+        except referencing.exceptions.Unresolvable as ref_err:
+            detail = A2uiErrorDetail(
+                path=f"functions.{name}",
+                code="invalid_reference",
+                message=str(ref_err),
+            )
+            raise A2uiValidationError(str(ref_err), details=[detail]) from ref_err
+
+        if isinstance(param_schema.get("properties"), dict):
+            for prop_name, prop_spec in param_schema["properties"].items():
+                if (
+                    isinstance(prop_spec, dict)
+                    and "default" in prop_spec
+                    and prop_name not in validated_args
+                ):
+                    validated_args[prop_name] = copy.deepcopy(prop_spec["default"])
+
+        return validated_args
 
     def validate_theme(self, theme: dict[str, Any]) -> None:
         """Validates a theme configuration dictionary against the catalog theme schema."""
@@ -624,7 +711,9 @@ class PayloadValidator(Generic[TComponent, TFunction]):
                         )
                         for err in schema_errors
                     ]
-                    summary = "\n".join(f"{e.path}: {e.message}" for e in details)
+                    summary = "\n".join(
+                        f"{detail.path}: {detail.message}" for detail in details
+                    )
                     raise A2uiValidationError(summary, details=details)
             except A2uiValidationError:
                 raise
@@ -635,8 +724,6 @@ class PayloadValidator(Generic[TComponent, TFunction]):
                     message=str(ref_err),
                 )
                 raise A2uiValidationError(str(ref_err), details=[detail]) from ref_err
-            except Exception:
-                pass
 
     def _map_json_schema_error_code(self, validator_name: str) -> str:
         if validator_name in ("required", "minProperties"):

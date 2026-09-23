@@ -52,8 +52,8 @@ class _TestValidatorHelper:
     def validate_components(self, components: Any) -> None:
         self.validate_component(components)
 
-    def validate_function(self, name: str, args: dict[str, Any]) -> None:
-        self.validator.validate_function(name, args)
+    def validate_function(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        return self.validator.validate_function(name, args)
 
 
 def _val(catalog: Catalog[TComponent, TFunction]) -> _TestValidatorHelper:
@@ -314,6 +314,43 @@ def test_function_validation_from_json():
     val.validate_function("search", {"query": "hello", "limit": 10})
     with pytest.raises(A2uiValidationError):
         val.validate_function("search", {"query": "hello", "limit": "not-an-int"})
+
+
+def test_validate_function_returns_coerced_model_args():
+    class SearchArgs(BaseModel):
+        query: str
+        limit: int = 20
+        offset: int = 0
+
+    catalog = Catalog(
+        protocol_version=PROTOCOL_VERSION,
+        catalog_id="https://a2ui.org/func-coerce-test",
+        functions=[FunctionApi("search", schema=SearchArgs)],
+    )
+    val = _val(catalog)
+    # Int string should be coerced to int, and offset default should be populated
+    res = val.validate_function("search", {"query": "hello", "limit": "50"})
+    assert res == {"query": "hello", "limit": 50, "offset": 0}
+
+
+def test_validate_function_returns_dict_args_with_defaults():
+    json_catalog = {
+        "catalogId": "https://a2ui.org/func-json-defaults",
+        "protocolVersion": PROTOCOL_VERSION,
+        "functions": {
+            "search": {
+                "parameters": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "default": 25},
+                },
+                "required": ["query"],
+            }
+        },
+    }
+    catalog = Catalog.from_json(json_catalog)
+    val = _val(catalog)
+    res = val.validate_function("search", {"query": "hello"})
+    assert res == {"query": "hello", "limit": 25}
 
 
 def test_nested_function_validation_with_models():
@@ -978,3 +1015,146 @@ def test_payload_validator_collects_errors_past_a_foreign_catalog_call():
     assert [detail.code for detail in exc_info.value.details] == [
         "unrecognized_function"
     ]
+
+
+def test_is_valid_uax31_identifier():
+    from a2ui.core.catalog.catalog import is_valid_uax31_identifier
+
+    # Empty string
+    assert not is_valid_uax31_identifier("")
+
+    # Valid ASCII
+    assert is_valid_uax31_identifier("foo")
+    assert is_valid_uax31_identifier("_foo")
+    assert is_valid_uax31_identifier("foo_1")
+
+    # Valid Unicode (\p{XID_Start} / \p{XID_Continue})
+    assert is_valid_uax31_identifier("café")
+    assert is_valid_uax31_identifier("변수")
+    assert is_valid_uax31_identifier("alpha_α")
+
+    # Single leading @
+    assert is_valid_uax31_identifier("@index")
+    assert is_valid_uax31_identifier("@custom")
+
+    # Bare "@"
+    assert not is_valid_uax31_identifier("@")
+
+    # Invalid symbols and leading digits
+    assert not is_valid_uax31_identifier("foo-bar")
+    assert not is_valid_uax31_identifier("1foo")
+    assert not is_valid_uax31_identifier("foo.bar")
+    assert not is_valid_uax31_identifier("@@index")
+
+    # Keyword names (valid syntactic identifiers)
+    assert is_valid_uax31_identifier("class")
+    assert is_valid_uax31_identifier("def")
+
+
+def test_validate_function_rejects_non_dict_args():
+    from a2ui.core.catalog import Catalog, FunctionImplementation
+    from a2ui.core.validation import PayloadValidator
+    from pydantic import BaseModel
+
+    class SearchParams(BaseModel):
+        query: str
+        limit: int = 10
+
+    catalog = Catalog(
+        catalog_id="test_cat",
+        protocol_version="v1.0",
+        components=[],
+        functions=[
+            FunctionImplementation(
+                name="search",
+                return_type="array",
+                schema=SearchParams,
+                execute=lambda args, ctx, abort: [],
+            )
+        ],
+    )
+    val = PayloadValidator(catalog=catalog)
+
+    # Valid dictionary args
+    res = val.validate_function("search", {"query": "apple", "limit": 25})
+    assert res == {"query": "apple", "limit": 25}
+
+    # Reject list args as type_mismatch
+    with pytest.raises(A2uiValidationError) as exc_info:
+        val.validate_function("search", ["apple", 25])  # type: ignore
+    assert exc_info.value.details[0].code == "type_mismatch"
+
+    # Reject primitive args
+    with pytest.raises(A2uiValidationError) as exc_info:
+        val.validate_function("search", 12345)  # type: ignore
+    assert exc_info.value.details[0].code == "type_mismatch"
+
+
+def test_payload_validator_foreign_catalog_identifier_validation():
+    from a2ui.core.catalog import Catalog, ModelComponentApi
+    from a2ui.core.validation import PayloadValidator
+    from pydantic import BaseModel
+
+    class ContainerProps(BaseModel):
+        title: Any = None
+
+    catalog = Catalog(
+        catalog_id="home_cat",
+        protocol_version="v1.0",
+        components=[ModelComponentApi(ContainerProps, "Container")],
+        functions=[],
+    )
+    val = PayloadValidator(catalog=catalog)
+
+    # Valid foreign catalog call with valid UAX #31 identifier syntax
+    val.validate_component({
+        "id": "c1",
+        "component": "Container",
+        "title": {
+            "call": "foreign_func",
+            "catalogId": "foreign_cat",
+            "args": {"param": "ok"},
+        },
+    })
+
+    # Invalid function identifier syntax targeting foreign catalog
+    with pytest.raises(A2uiValidationError) as exc_info:
+        val.validate_component({
+            "id": "c2",
+            "component": "Container",
+            "title": {
+                "call": "invalid-func-name!",
+                "catalogId": "foreign_cat",
+                "args": {"param": "ok"},
+            },
+        })
+    assert any(d.code == "invalid_identifier" for d in exc_info.value.details)
+
+
+def test_validate_function_non_string_arg_key_defensive():
+    from a2ui.core.catalog import Catalog, FunctionImplementation
+    from a2ui.core.validation import PayloadValidator
+    from pydantic import BaseModel
+
+    class NoopParams(BaseModel):
+        pass
+
+    catalog = Catalog(
+        catalog_id="test_cat",
+        protocol_version="v1.0",
+        components=[],
+        functions=[
+            FunctionImplementation(
+                name="noop",
+                return_type="string",
+                schema=NoopParams,
+                execute=lambda args, ctx, abort: "",
+            )
+        ],
+    )
+    val = PayloadValidator(catalog=catalog)
+
+    # Non-string dictionary key
+    with pytest.raises(A2uiValidationError) as exc_info:
+        val.validate_function("noop", {123: "val"})  # type: ignore
+    assert exc_info.value.details[0].code == "invalid_identifier"
