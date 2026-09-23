@@ -55,6 +55,23 @@ export interface A2uiErrorPayload {
   [key: string]: unknown;
 }
 
+/**
+ * Payload emitted on `SurfaceModel.onWarning` when a non-fatal condition
+ * occurs during surface evaluation (such as a bound JSON Pointer that does not
+ * physically exist in the active DataModel).
+ */
+export interface A2uiWarningPayload {
+  /** Machine-readable warning code (e.g. `'MISSING_DATA_BINDING'`). */
+  code: 'MISSING_DATA_BINDING' | (string & {});
+  /** Absolute JSON pointer path associated with the warning, if applicable. */
+  path?: string;
+  /** Human-readable explanation of the warning condition. */
+  message: string;
+  /** Identifier of the surface where the warning occurred, if bound. */
+  surfaceId?: string;
+  [key: string]: unknown;
+}
+
 /** Handler callback for actions emitted from a surface. */
 export type ActionListener = (action: ActionPayload) => void | Promise<void>;
 
@@ -80,12 +97,16 @@ export class SurfaceModel<
 
   private readonly _onAction = new EventEmitter<ActionPayload>();
   private readonly _onError = new EventEmitter<A2uiErrorPayload>();
+  private readonly _onWarning = new EventEmitter<A2uiWarningPayload>();
 
   /** Event source firing whenever an action is dispatched from this surface. */
   readonly onAction: EventSource<ActionPayload> = this._onAction;
 
   /** Event source firing whenever an error occurs on this surface. */
   readonly onError: EventSource<A2uiErrorPayload> = this._onError;
+
+  /** Event source firing whenever a non-fatal warning occurs on this surface. */
+  readonly onWarning: EventSource<A2uiWarningPayload> = this._onWarning;
 
   /**
    * Catalogs available to this surface, keyed by catalog ID.
@@ -109,6 +130,7 @@ export class SurfaceModel<
    * @param sendDataModel Whether the renderer sends the full data model with actions.
    * @param dataModel Optional custom DataModel instance. If provided, the SurfaceModel assumes
    *   full ownership of its lifecycle and will dispose it when dispose() is called.
+   * @param rootId Identifier of the root component on this surface (defaults to `'root'`).
    */
   constructor(
     readonly id: string,
@@ -121,6 +143,8 @@ export class SurfaceModel<
     readonly theme: any = {},
     readonly sendDataModel: boolean = false,
     dataModel?: DataModel,
+    /** Identifier of the root component on this surface (defaults to `'root'`). */
+    readonly rootId: string = 'root',
   ) {
     const catalogs = new Map(availableCatalogs);
     if (defaultCatalog?.id && !catalogs.has(defaultCatalog.id)) {
@@ -214,6 +238,19 @@ export class SurfaceModel<
   }
 
   /**
+   * Dispatches a non-fatal warning from this surface to registered listeners.
+   *
+   * @param warning The warning payload to dispatch.
+   * @returns Promise that resolves once listeners have handled the warning.
+   */
+  async dispatchWarning(warning: A2uiWarningPayload): Promise<void> {
+    await this._onWarning.emit({
+      ...warning,
+      surfaceId: this.id,
+    });
+  }
+
+  /**
    * Disposes the surface, data model, components, and event emitters.
    */
   dispose(): void {
@@ -221,5 +258,6 @@ export class SurfaceModel<
     this.componentsModel.dispose();
     this._onAction.dispose();
     this._onError.dispose();
+    this._onWarning.dispose();
   }
 }

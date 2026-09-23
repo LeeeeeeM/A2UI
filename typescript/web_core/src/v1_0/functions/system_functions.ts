@@ -18,6 +18,7 @@ import {z} from 'zod';
 
 import {createFunctionImplementation, FunctionImplementation} from '../../catalog/types.js';
 import {A2uiValidationError} from '../../errors.js';
+import {resolveContextIndex} from '../../rendering/data-context.js';
 
 /**
  * System function definition for computing iteration indices in array contexts.
@@ -25,38 +26,29 @@ import {A2uiValidationError} from '../../errors.js';
  * Evaluates the 0-based iteration index with an optional numerical offset.
  */
 export const IndexApi = {
+  /** Name of the system function. */
   name: '@index' as const,
+  /** Declared return type for catalog type checking. */
   returnType: 'number' as const,
+  /** Scope of callers permitted to invoke this function. */
   allowedCallers: 'rendererOnly' as const,
+  /** Zod schema validating function arguments. */
   schema: z.object({
     'offset': z.coerce.number().optional(),
   }),
 };
 
 /**
- * Implementation of the `@index` function.
+ * Implementation of the `@index` system function.
  *
  * Returns the 0-based iteration index of the enclosing collection template,
  * plus an optional offset.
  *
- * @throws {A2uiValidationError} If called outside a collection template. A
- *   default of 0 would present a payload error as a plausible value.
+ * @throws {A2uiValidationError} If called outside a collection template iteration scope.
  */
 export const IndexImplementation = createFunctionImplementation(IndexApi, (args, context) => {
   const offset = typeof args.offset === 'number' && Number.isFinite(args.offset) ? args.offset : 0;
-
-  let index: number | undefined;
-  if (typeof (context as any)?.getIndex === 'function') {
-    index = (context as any).getIndex();
-  } else if (context?.path) {
-    const parts = context.path.split('/').filter(Boolean);
-    for (let i = parts.length - 1; i >= 0; i--) {
-      if (/^\d+$/.test(parts[i])) {
-        index = parseInt(parts[i], 10);
-        break;
-      }
-    }
-  }
+  const index = resolveContextIndex(context);
 
   if (index === undefined || !Number.isFinite(index)) {
     throw new A2uiValidationError(
