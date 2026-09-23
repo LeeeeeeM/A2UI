@@ -443,3 +443,247 @@ def test_data_context_expression_error_dispatching():
     assert errors[0]["code"] == "EXPRESSION_ERROR"
     assert errors[0]["expression"] == "buggy_fn"
     assert "division by zero" in errors[0]["message"].lower()
+
+
+def test_data_context_catalog_and_missing_function_error_dispatch():
+    errors: list[dict[str, Any]] = []
+    cat = BasicCatalog()
+    surface = SurfaceModel("s1", cat)
+    surface.on_error.subscribe(lambda err: errors.append(err))
+    ctx = DataContext(surface, path="/")
+
+    # 1. Non-existent function name in catalog
+    res1 = ctx.resolve_dynamic_value({"call": "nonExistentFunction"})
+    assert res1 is None
+    assert len(errors) == 1
+    assert errors[0]["code"] == "EXPRESSION_ERROR"
+    assert errors[0]["expression"] == "nonExistentFunction"
+    assert "Unrecognized function" in errors[0]["message"]
+
+    # 2. Non-existent catalog ID
+    res2 = ctx.resolve_dynamic_value({
+        "call": "formatString",
+        "catalogId": "unknown_catalog_id",
+        "args": {"value": "test"},
+    })
+    assert res2 is None
+    assert len(errors) == 2
+    assert errors[1]["code"] == "EXPRESSION_ERROR"
+    assert "Catalog not found" in errors[1]["message"]
+
+    # 3. Function missing in catalog implementation
+    class MissingFnCatalog(BasicCatalog):
+
+        def get_function(self, name: str) -> Any:
+            return None
+
+    mock_surface = SurfaceModel("s2", MissingFnCatalog())
+    mock_errors: list[dict[str, Any]] = []
+    mock_surface.on_error.subscribe(lambda err: mock_errors.append(err))
+    mock_ctx = DataContext(mock_surface, path="/")
+    res3 = mock_ctx.resolve_dynamic_value({
+        "call": "formatString",
+        "args": {"value": "test"},
+    })
+    assert res3 is None
+    assert len(mock_errors) == 1
+    assert mock_errors[0]["code"] == "EXPRESSION_ERROR"
+    assert "not found in catalog" in mock_errors[0]["message"]
+
+
+def test_generic_binder_two_way_setters():
+    cat = BasicCatalog()
+    data_model = DataModel({"form": {"firstName": "Alice"}})
+    comp = ComponentModel(
+        "input_1",
+        "TextInput",
+        cat,
+        {"value": {"path": "/form/firstName"}},
+    )
+    surface = SurfaceModel("s1", cat, data_model=data_model)
+    ctx = DataContext(surface, path="/")
+    context = ComponentContext(comp, ctx)
+
+    dynamic_schema = {
+        "type": "object",
+        "properties": {
+            "value": {"$ref": "common_types.json#/$defs/DynamicString"},
+        },
+    }
+    binder = GenericBinder(context, schema=dynamic_schema)
+
+    assert binder.current_props["value"] == "Alice"
+    assert "setValue" in binder.current_props
+    assert callable(binder.current_props["setValue"])
+
+    # Call generated two-way setter
+    binder.current_props["setValue"]("Bob")
+    assert data_model.get("/form/firstName") == "Bob"
+    assert binder.current_props["value"] == "Bob"
+    binder.dispose()
+
+
+def test_generic_binder_action_closure():
+    cat = BasicCatalog()
+    data_model = DataModel({"user": {"id": "u123", "role": "admin"}})
+    comp = ComponentModel(
+        "btn_submit",
+        "Button",
+        cat,
+        {
+            "onClick": {
+                "event": {
+                    "name": "submit_form",
+                    "context": {"userId": {"path": "/user/id"}},
+                }
+            }
+        },
+    )
+    surface = SurfaceModel("s1", cat, data_model=data_model)
+    ctx = DataContext(surface, path="/")
+    context = ComponentContext(comp, ctx)
+
+    dispatched_actions: list[dict[str, Any]] = []
+    surface.on_action.subscribe(lambda act: dispatched_actions.append(act))
+
+    action_schema = {
+        "type": "object",
+        "properties": {
+            "onClick": {"$ref": "common_types.json#/$defs/Action"},
+        },
+    }
+    binder = GenericBinder(context, schema=action_schema)
+
+    assert "onClick" in binder.current_props
+    assert callable(binder.current_props["onClick"])
+
+    # Invoke action closure
+    binder.current_props["onClick"]()
+    assert len(dispatched_actions) == 1
+    assert dispatched_actions[0]["name"] == "submit_form"
+    assert dispatched_actions[0]["context"] == {"userId": "u123"}
+    assert dispatched_actions[0]["sourceComponentId"] == "btn_submit"
+    binder.dispose()
+
+
+def test_generic_binder_schema_driven_custom_checkable_property():
+    cat = BasicCatalog()
+    data_model = DataModel({"username": ""})
+    comp = ComponentModel(
+        "username_input",
+        "CustomInput",
+        cat,
+        {
+            "customValidators": [{
+                "condition": {
+                    "call": "required",
+                    "args": {"value": {"path": "/username"}},
+                },
+                "message": "Username is required",
+            }]
+        },
+    )
+    surface = SurfaceModel("s1", cat, data_model=data_model)
+    ctx = DataContext(surface, path="/")
+    context = ComponentContext(comp, ctx)
+
+    custom_schema = {
+        "type": "object",
+        "properties": {
+            "customValidators": {
+                "type": "array",
+                "items": {"$ref": "common_types.json#/$defs/CheckRule"},
+            }
+        },
+    }
+    binder = GenericBinder(context, schema=custom_schema)
+
+    # Note: Property name is customValidators, NOT 'checks'
+    assert binder.current_props["isValid"] is False
+    assert binder.current_props["validationErrors"] == ["Username is required"]
+    assert binder.current_props["validationResult"]["valid"] is False
+
+    data_model.set("/username", "valid_user")
+    assert binder.current_props["isValid"] is True
+    assert binder.current_props["validationErrors"] == []
+    binder.dispose()
+
+
+def test_generic_binder_empty_key_property_does_not_crash_setter_generation():
+    cat = BasicCatalog()
+    data_model = DataModel()
+    comp = ComponentModel(
+        "comp_empty_key",
+        "CustomComp",
+        cat,
+        {"": {"path": "/empty"}},
+    )
+    surface = SurfaceModel("s1", cat, data_model=data_model)
+    ctx = DataContext(surface, path="/")
+    context = ComponentContext(comp, ctx)
+
+    # Should not raise IndexError on empty key
+    binder = GenericBinder(context)
+    assert "" in binder.current_props
+    binder.dispose()
+
+
+def test_generic_binder_nested_checkable_does_not_pollute_root_props():
+    cat = BasicCatalog()
+    data_model = DataModel({"form": {"field": "valid"}})
+    comp = ComponentModel(
+        "nested_form",
+        "FormComp",
+        cat,
+        {
+            "topLevel": "safe",
+            "section": {
+                "fieldVal": {"path": "/form/field"},
+                "checks": [{
+                    "condition": {
+                        "call": "required",
+                        "args": {"value": {"path": "/form/field"}},
+                    },
+                    "message": "Field required",
+                }],
+            },
+        },
+    )
+    surface = SurfaceModel("s1", cat, data_model=data_model)
+    ctx = DataContext(surface, path="/")
+    context = ComponentContext(comp, ctx)
+
+    binder = GenericBinder(context)
+    # Root props should not be polluted by section's internal properties
+    assert binder.current_props["topLevel"] == "safe"
+    assert "fieldVal" not in binder.current_props
+    assert binder.current_props["section"]["isValid"] is True
+
+    # Mutate the nested dynamic property value
+    data_model.set("/form/field", "updated_value")
+    # Verify the nested property is updated and root remains unpolluted
+    assert binder.current_props["section"]["fieldVal"] == "updated_value"
+    assert "fieldVal" not in binder.current_props
+    binder.dispose()
+
+
+def test_generic_binder_nested_list_dynamic_update():
+    cat = BasicCatalog()
+    data_model = DataModel({"items": ["initial"]})
+    comp = ComponentModel(
+        "list_comp",
+        "ListComp",
+        cat,
+        {"items": [{"path": "/items/0"}]},
+    )
+    surface = SurfaceModel("s1", cat, data_model=data_model)
+    ctx = DataContext(surface, path="/")
+    context = ComponentContext(comp, ctx)
+
+    binder = GenericBinder(context)
+    assert binder.current_props["items"][0] == "initial"
+
+    data_model.set("/items/0", "updated")
+    assert binder.current_props["items"][0] == "updated"
+    assert "0" not in binder.current_props
+    binder.dispose()

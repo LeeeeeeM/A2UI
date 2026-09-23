@@ -77,7 +77,16 @@ class ComponentNode:
             elif isinstance(v, list):
                 return [serialize_value(item) for item in v]
             elif isinstance(v, dict):
-                return {dk: serialize_value(dv) for dk, dv in v.items()}
+                return {
+                    dk: serialize_value(dv)
+                    for dk, dv in v.items()
+                    if not (
+                        dk.startswith("set")
+                        and len(dk) > 3
+                        and dk[3].isupper()
+                        and callable(dv)
+                    )
+                }
             elif isinstance(v, Signal):
                 return serialize_value(v.value)
             elif callable(v):
@@ -87,6 +96,8 @@ class ComponentNode:
 
         resolved_props = {}
         for k, val in self.props.value.items():
+            if k.startswith("set") and len(k) > 3 and k[3].isupper() and callable(val):
+                continue
             resolved_props[k] = serialize_value(val)
 
         return {
