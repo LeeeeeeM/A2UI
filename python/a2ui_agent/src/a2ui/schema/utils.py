@@ -102,6 +102,23 @@ def get_spec_dir(version: str = "v1_0", start_path: str | None = None) -> str:
     return os.path.join(root, SPECIFICATION_DIR, norm_version)
 
 
+def _is_at_least_v1(version: str) -> bool:
+    """Checks whether the requested protocol version is >= v1.0.
+
+    A version string that does not parse as semver is treated as v1.0 or later
+    unless it starts with "0" (after stripping a leading "v"), so labels such as
+    "latest" select the v1 catalog.
+    """
+    from a2ui.core.common.semver import normalize_version_string, parse_semver
+
+    clean_version = version.split("-")[0].split("+")[0]
+    parsed = parse_semver(normalize_version_string(clean_version))
+    if parsed:
+        return parsed.major >= 1
+    norm = clean_version.lstrip("vV")
+    return not norm.startswith("0")
+
+
 def get_basic_catalog_path(version: str = "v1_0", start_path: str | None = None) -> str:
     """Returns the path to the basic catalog.json file for a given version.
 
@@ -116,6 +133,12 @@ def get_basic_catalog_path(version: str = "v1_0", start_path: str | None = None)
         FileNotFoundError: If the repository root containing 'specification'
             cannot be found.
     """
+    if _is_at_least_v1(version):
+        root = find_repo_root(start_path)
+        if root:
+            canonical = os.path.join(root, "catalogs", "basic", "v1", "catalog.json")
+            if os.path.exists(canonical):
+                return canonical
     return os.path.join(
         get_spec_dir(version, start_path), "catalogs", "basic", "catalog.json"
     )
@@ -135,6 +158,12 @@ def get_basic_examples_dir(version: str = "v1_0", start_path: str | None = None)
         FileNotFoundError: If the repository root containing 'specification'
             cannot be found.
     """
+    if _is_at_least_v1(version):
+        root = find_repo_root(start_path)
+        if root:
+            canonical = os.path.join(root, "catalogs", "basic", "v1", "examples")
+            if os.path.exists(canonical):
+                return canonical
     return os.path.join(
         get_spec_dir(version, start_path), "catalogs", "basic", "examples"
     )

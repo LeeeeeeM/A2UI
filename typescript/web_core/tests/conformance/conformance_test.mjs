@@ -118,8 +118,10 @@ const SKIP_TEST_NAMES = new Set(['test_v09_basic_catalog_schema', 'test_v10_basi
  *
  * 'accessibility.yaml' tests ARIA and DOM accessibility tree rendering, which is handled
  * by UI framework renderers (Lit, React, Angular, Flutter, SwiftUI) rather than headless web_core.
+ *
+ * 'builder.yaml' covers the agent-side typesafe builder API, which web_core does not implement.
  */
-const SKIP_TEST_SUITES = new Set(['accessibility.yaml']);
+const SKIP_TEST_SUITES = new Set(['accessibility.yaml', 'builder.yaml']);
 
 /**
  * Action types the web_core runner deliberately does not implement, and why.
@@ -1464,7 +1466,9 @@ function getCatalogsForTestCase(testCase) {
   if (testCase.catalogPaths) {
     for (const p of testCase.catalogPaths) {
       const fullPath = path.resolve(__dirname, '../../../../', p);
-      if (!fs.existsSync(fullPath)) continue;
+      if (!fs.existsSync(fullPath)) {
+        throw new Error(`catalogPaths entry '${p}' does not exist (resolved to ${fullPath})`);
+      }
       let json;
       try {
         json = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
