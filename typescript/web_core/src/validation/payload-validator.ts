@@ -19,6 +19,7 @@ import {isAtLeastVersion} from '../common/semver.js';
 import {isValidUax31Identifier} from '../common/uax31.js';
 import {A2uiValidationError} from '../errors.js';
 import {formatZodIssue} from '../processing/format-zod-issue.js';
+import {MAX_FUNCTION_CALL_ARGS} from '../types/helpers.js';
 import {IndexApi} from '../v1_0/functions/system_functions.js';
 import type {ValidationConfig} from './integrity-checker.js';
 
@@ -135,7 +136,13 @@ export class PayloadValidator {
   private assertFunctionIdentifiers(name: string, args: unknown): void {
     this.assertIdentifier(name, `Function name '${name}' must be a valid UAX #31 identifier`);
     if (args && typeof args === 'object' && !Array.isArray(args)) {
-      for (const argName of Object.keys(args)) {
+      const keys = Object.keys(args);
+      if (keys.length > MAX_FUNCTION_CALL_ARGS) {
+        throw new A2uiValidationError(
+          `Function call '${name}' exceeds maximum allowed arguments count (${MAX_FUNCTION_CALL_ARGS})`,
+        );
+      }
+      for (const argName of keys) {
         this.assertIdentifier(
           argName,
           `Function argument '${argName}' in function '${name}' must be a valid UAX #31 identifier`,

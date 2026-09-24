@@ -216,14 +216,14 @@ export class A2uiRpcError extends A2uiError {
   /**
    * Initializes a new `A2uiRpcError` instance.
    *
-   * @param code Category code or string identifying the RPC error.
    * @param message Human-readable error description.
+   * @param code Category code or string identifying the RPC error.
    * @param functionCallId Optional identifier of the failed function call.
    * @param details Optional structured error details.
    */
   constructor(
-    code: RpcErrorCode | string,
     message: string,
+    code: RpcErrorCode | string = RpcErrorCode.UNKNOWN_ERROR,
     /** Identifier of the failed function call, if available. */
     public readonly functionCallId?: string,
     /** Structured error details or original error cause, if available. */
