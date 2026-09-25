@@ -36,7 +36,7 @@ runs:
       if: ${{ (inputs.cache == 'true' || inputs.cache == true) || ((inputs.cache == '' || inputs.cache == null) && (inputs.install == 'true' || inputs.install == true)) }}
       with:
         node-version: ${{ inputs.node-version }}
-        cache: ${{ inputs.install == 'true' && 'yarn' || '' }}
+        cache: "yarn"
     - name: Install dependencies
       if: ${{ inputs.install == 'true' || inputs.install == true }}
       run: yarn install --immutable
