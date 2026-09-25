@@ -141,14 +141,23 @@ export class SurfaceModel<
      * catalog explicitly.
      */
     readonly defaultCatalog: Catalog<T, F>,
-    availableCatalogs: ReadonlyMap<string, Catalog<T, F>> = new Map(),
+    availableCatalogs: ReadonlyMap<string, Catalog<T, F>> | null | undefined = new Map(),
     readonly theme: any = {},
     readonly sendDataModel: boolean = false,
     dataModel?: DataModel,
     /** Identifier of the root component on this surface (defaults to `'root'`). */
     readonly rootId: string = 'root',
   ) {
-    const catalogs = new Map(availableCatalogs);
+    if (
+      availableCatalogs !== undefined &&
+      availableCatalogs !== null &&
+      !(availableCatalogs instanceof Map)
+    ) {
+      throw new TypeError(
+        'availableCatalogs must be a Map, or undefined/null. Note that availableCatalogs is now the 3rd argument to SurfaceModel and theme is the 4th argument.',
+      );
+    }
+    const catalogs = new Map(availableCatalogs ?? []);
     if (defaultCatalog?.id && !catalogs.has(defaultCatalog.id)) {
       catalogs.set(defaultCatalog.id, defaultCatalog);
     }
