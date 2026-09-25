@@ -54,10 +54,10 @@ import {BoundProperty} from './types';
         *ngComponentOutlet="
           componentType()!;
           inputs: {
-            'props': props(),
-            'surfaceId': surfaceId(),
-            'componentId': resolvedComponentId,
-            'dataContextPath': resolvedDataContextPath,
+            props: props(),
+            surfaceId: surfaceId(),
+            componentId: resolvedComponentId,
+            dataContextPath: resolvedDataContextPath,
           }
         "
       ></ng-container>
@@ -174,7 +174,7 @@ export class ComponentHostComponent {
     basePath: string,
   ): void {
     // Resolve component from the surface's catalog
-    const catalog = surface.catalog as AngularCatalog;
+    const catalog = surface.defaultCatalog as AngularCatalog;
     const api = catalog.components.get(componentModel.type);
 
     if (!api) {
